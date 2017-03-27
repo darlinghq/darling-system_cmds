@@ -32,8 +32,6 @@ add_compile_options(
 	-fblocks
 )
 
-set(CMAKE_EXE_LINKER_FLAGS "-nodefaultlibs -nostdlib -fPIC -Wl,--version-script=${DARLING_TOP_DIRECTORY}/darwin.map")
-
 add_darling_executable(ac ac.tproj/ac.c)
 add_darling_executable(accton accton.tproj/accton.c)
 add_darling_executable(arch arch.tproj/arch.c)
@@ -106,6 +104,7 @@ add_darling_executable(login
 	login.tproj/login.c
 	login.tproj/login_audit.c
 )
+target_link_libraries(login pam)
 target_compile_definitions(login PRIVATE USE_PAM BSM_AUDIT)
 #add_darling_executable(lskq lskq.tproj/lskq.c) error: incomplete definition of type 'struct kevent_extinfo'
 add_darling_executable(lsmp

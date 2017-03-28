@@ -194,14 +194,13 @@ install(FILES pagesize.tproj/pagesize.sh DESTINATION libexec/darling/usr/bin
 		    WORLD_EXECUTE WORLD_READ
 )
 
-InstallSymlink(arch libexec/darling/usr/bin/machine)
-InstallSymlink(at libexec/darling/usr/bin/atq)
-InstallSymlink(at libexec/darling/usr/bin/atrm)
-InstallSymlink(at libexec/darling/usr/bin/batch)
-InstallSymlink(chpass libexec/darling/usr/bin/chfn)
-InstallSymlink(chpass libexec/darling/usr/bin/chsh)
-InstallSymlink(reboot libexec/darling/sbin/halt)
-InstallSymlink(arch libexec/darling/usr/bin/machine)
+InstallSymlink(arch ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/bin/machine)
+InstallSymlink(at ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/bin/atq)
+InstallSymlink(at ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/bin/atrm)
+InstallSymlink(at ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/bin/batch)
+InstallSymlink(chpass ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/bin/chfn)
+InstallSymlink(chpass ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/bin/chsh)
+InstallSymlink(reboot ${CMAKE_INSTALL_PREFIX}/libexec/darling/sbin/halt)
 
 #install(FILES chkpasswd.tproj/chkpasswd.pam DESTINATION libexec/darling/etc/pam.d RENAME chkpasswd)
 install(FILES passwd.tproj/passwd.pam DESTINATION libexec/darling/etc/pam.d RENAME passwd)

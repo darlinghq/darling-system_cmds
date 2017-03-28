@@ -23,6 +23,11 @@ include_directories(
 	${CMAKE_SOURCE_DIR}/platform-include/mach
 	${CMAKE_SOURCE_DIR}/src/external/libdispatch/include
 	${CMAKE_SOURCE_DIR}/src/libinfo/membership.subproj
+	${CMAKE_SOURCE_DIR}/src/kernel/libsyscall/wrappers/libproc
+	${CMAKE_SOURCE_DIR}/src/external/corefoundation
+	${CMAKE_SOURCE_DIR}/src/external/libclosure
+	${CMAKE_SOURCE_DIR}/src/launchd/liblaunch
+	${CMAKE_SOURCE_DIR}/src/libinfo/nis.subproj
 )
 
 add_compile_options(
@@ -35,7 +40,7 @@ add_compile_options(
 add_darling_executable(ac ac.tproj/ac.c)
 add_darling_executable(accton accton.tproj/accton.c)
 add_darling_executable(arch arch.tproj/arch.c)
-target_link_libraries(arch CFF)
+target_link_libraries(arch CoreFoundation)
 add_darling_executable(at
 	at.tproj/at.c
 	at.tproj/panic.c
@@ -55,12 +60,17 @@ target_compile_definitions(atrun PRIVATE
 	-DDAEMON_UID=1
 	-DDAEMON_GID=1
 )
-add_darling_executable(chkpasswd
-	chkpasswd.tproj/file_passwd.c
-#	chkpasswd.tproj/nis_passwd.c rpcsvc/yp_prot.h
-#	chkpasswd.tproj/od_passwd.c same
-	chkpasswd.tproj/pam_passwd.c
-)
+
+# Disable until we have remote_cmds (rpc_yppasswd)
+#add_darling_executable(chkpasswd
+#	chkpasswd.tproj/file_passwd.c
+#	chkpasswd.tproj/nis_passwd.c # rpcsvc/yp_prot.h
+#	chkpasswd.tproj/od_passwd.c
+#	chkpasswd.tproj/pam_passwd.c
+#	chkpasswd.tproj/passwd.c
+#	chkpasswd.tproj/stringops.c
+#)
+#target_link_libraries(chkpasswd pam.2)
 #add_darling_executable(chpass _PWSCAN_WARN
 #	chpass.tproj/chpass.c
 #	chpass.tproj/edit.c
@@ -87,7 +97,7 @@ add_darling_executable(dynamic_pager dynamic_pager.tproj/dynamic_pager.c)
 #	gcore.tproj/vanilla.c
 #	gcore.tproj/vm.c
 #)
-add_darling_executable(getconf getconf.tproj/getconf.c)
+add_darling_executable(getconf getconf.tproj/confstr.c  getconf.tproj/getconf.c  getconf.tproj/limits.c  getconf.tproj/pathconf.c  getconf.tproj/progenv.c  getconf.tproj/sysconf.c)
 add_darling_executable(getty
 	getty.tproj/chat.c
 	getty.tproj/init.c
@@ -95,8 +105,8 @@ add_darling_executable(getty
 	getty.tproj/subr.c
 )
 add_darling_executable(hostinfo hostinfo.tproj/hostinfo.c)
-add_darling_executable(iostat iostat.tproj/iostat.c)
-target_compile_options(iostat PRIVATE -include errno.h)
+#add_darling_executable(iostat iostat.tproj/iostat.c) # Needs IOKit
+#target_compile_options(iostat PRIVATE -include errno.h)
 #add_darling_executable(latency latency.tproj/latency.c) ktrace
 #target_link_libraries(latency ncurses util)
 add_darling_executable(login
@@ -104,7 +114,7 @@ add_darling_executable(login
 	login.tproj/login.c
 	login.tproj/login_audit.c
 )
-target_link_libraries(login pam)
+target_link_libraries(login pam.2)
 target_compile_definitions(login PRIVATE USE_PAM BSM_AUDIT)
 #add_darling_executable(lskq lskq.tproj/lskq.c) error: incomplete definition of type 'struct kevent_extinfo'
 add_darling_executable(lsmp
@@ -115,15 +125,17 @@ add_darling_executable(lsmp
 add_darling_executable(mkfile mkfile.tproj/mkfile.c)
 add_darling_executable(newgrp newgrp.tproj/newgrp.c)
 add_darling_executable(nologin nologin.tproj/nologin.c)
-add_darling_executable(nvram nvram.tproj/nvram.c)
-target_compile_options(nvram PRIVATE -include errno.h)
-add_darling_executable(passwd
-	passwd.tproj/file_passwd.c
+#add_darling_executable(nvram nvram.tproj/nvram.c)
+#target_compile_options(nvram PRIVATE -include errno.h)
+#target_link_libraries(nvram CoreFoundation)
+#add_darling_executable(passwd # Disabled until we have remote_cmds (yppasswd)
+#	passwd.tproj/file_passwd.c
 #	passwd.tproj/nis_passwd.c rpcsvc/yp_prot.h
 #	passwd.tproj/od_passwd.c open directory problems
-	passwd.tproj/pam_passwd.c
-	passwd.tproj/passwd.c
-)
+#	passwd.tproj/pam_passwd.c
+#	passwd.tproj/passwd.c
+#)
+#target_link_libraries(passwd pam.2)
 add_darling_executable(purge purge.tproj/purge.c)
 add_darling_executable(pwd_mkdb
 	pwd_mkdb.tproj/pw_scan.c
@@ -162,14 +174,14 @@ add_darling_executable(zic
 
 install(TARGETS wait4path sync DESTINATION libexec/darling/bin)
 
-install(TARGETS getconf passwd at arch vm_stat getconf lsmp hostinfo DESTINATION libexec/darling/usr/bin)
+install(TARGETS at arch vm_stat getconf lsmp hostinfo DESTINATION libexec/darling/usr/bin)
 
-install(TARGETS zic iostat ac vipw vifs sysctl zdump pwd_mkdb nvram mkfile accton sa purge sysctl
+install(TARGETS zic ac vipw vifs sysctl zdump pwd_mkdb mkfile accton sa purge sysctl
 	DESTINATION libexec/darling/usr/sbin)
 
 install(TARGETS nologin dynamic_pager dmesg DESTINATION libexec/darling/sbin)
 
-install(TARGETS chkpasswd getty atrun DESTINATION libexec/darling/usr/libexec
+install(TARGETS getty atrun DESTINATION libexec/darling/usr/libexec
 	PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ
                     GROUP_EXECUTE GROUP_READ
 		    WORLD_EXECUTE WORLD_READ
@@ -191,7 +203,7 @@ InstallSymlink(chpass libexec/darling/usr/bin/chsh)
 InstallSymlink(reboot libexec/darling/sbin/halt)
 InstallSymlink(arch libexec/darling/usr/bin/machine)
 
-install(FILES chkpasswd.tproj/chkpasswd.pam DESTINATION libexec/darling/etc/pam.d RENAME chkpasswd)
+#install(FILES chkpasswd.tproj/chkpasswd.pam DESTINATION libexec/darling/etc/pam.d RENAME chkpasswd)
 install(FILES passwd.tproj/passwd.pam DESTINATION libexec/darling/etc/pam.d RENAME passwd)
 install(DIRECTORY login.tproj/pam.d DESTINATION libexec/darling/etc)
 

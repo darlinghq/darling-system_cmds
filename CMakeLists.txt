@@ -109,13 +109,14 @@ add_darling_executable(hostinfo hostinfo.tproj/hostinfo.c)
 #target_compile_options(iostat PRIVATE -include errno.h)
 #add_darling_executable(latency latency.tproj/latency.c) ktrace
 #target_link_libraries(latency ncurses util)
-add_darling_executable(login
+add_darling_executable(login-exe
 	login.tproj/klogin.c
 	login.tproj/login.c
 	login.tproj/login_audit.c
 )
-target_link_libraries(login pam.2)
-target_compile_definitions(login PRIVATE USE_PAM BSM_AUDIT)
+set_target_properties(login-exe PROPERTIES OUTPUT_NAME "login")
+target_link_libraries(login-exe pam.2)
+target_compile_definitions(login-exe PRIVATE USE_PAM BSM_AUDIT)
 #add_darling_executable(lskq lskq.tproj/lskq.c) error: incomplete definition of type 'struct kevent_extinfo'
 add_darling_executable(lsmp
 	lsmp.tproj/lsmp.c
@@ -174,7 +175,7 @@ add_darling_executable(zic
 
 install(TARGETS wait4path sync DESTINATION libexec/darling/bin)
 
-install(TARGETS at arch vm_stat getconf lsmp hostinfo DESTINATION libexec/darling/usr/bin)
+install(TARGETS at arch vm_stat getconf lsmp hostinfo login-exe DESTINATION libexec/darling/usr/bin)
 
 install(TARGETS zic ac vipw vifs sysctl zdump pwd_mkdb mkfile accton sa purge sysctl
 	DESTINATION libexec/darling/usr/sbin)

@@ -114,7 +114,7 @@ add_darling_executable(login-exe
 	login.tproj/login_audit.c
 )
 set_target_properties(login-exe PROPERTIES OUTPUT_NAME "login")
-target_link_libraries(login-exe pam bsm)
+target_link_libraries(login-exe pam.2 bsm.0)
 target_compile_definitions(login-exe PRIVATE USE_PAM USE_BSM_AUDIT)
 #add_darling_executable(lskq lskq.tproj/lskq.c) error: incomplete definition of type 'struct kevent_extinfo'
 add_darling_executable(lsmp

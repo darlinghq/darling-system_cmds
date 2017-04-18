@@ -110,13 +110,12 @@ add_darling_executable(hostinfo hostinfo.tproj/hostinfo.c)
 #add_darling_executable(latency latency.tproj/latency.c) ktrace
 #target_link_libraries(latency ncurses util)
 add_darling_executable(login-exe
-	login.tproj/klogin.c
 	login.tproj/login.c
 	login.tproj/login_audit.c
 )
 set_target_properties(login-exe PROPERTIES OUTPUT_NAME "login")
-target_link_libraries(login-exe pam.2)
-target_compile_definitions(login-exe PRIVATE USE_PAM BSM_AUDIT)
+target_link_libraries(login-exe pam bsm)
+target_compile_definitions(login-exe PRIVATE USE_PAM USE_BSM_AUDIT)
 #add_darling_executable(lskq lskq.tproj/lskq.c) error: incomplete definition of type 'struct kevent_extinfo'
 add_darling_executable(lsmp
 	lsmp.tproj/lsmp.c

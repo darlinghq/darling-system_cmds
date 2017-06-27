@@ -275,4 +275,4 @@ install(FILES
 
 	DESTINATION libexec/darling/usr/share/man/man8
 )
-InstallSymlink(reboot.8 libexec/darling/usr/share/man/man1/halt.8)
+InstallSymlink(reboot.8 ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/man/man1/halt.8)

@@ -232,11 +232,11 @@ install(FILES
 
 	DESTINATION libexec/darling/usr/share/man/man1
 )
-InstallSymlink(at.1 libexec/darling/usr/share/man/man1/atq.1)
-InstallSymlink(at.1 libexec/darling/usr/share/man/man1/atrm.1)
-InstallSymlink(at.1 libexec/darling/usr/share/man/man1/batch.1)
-InstallSymlink(chpass.1 libexec/darling/usr/share/man/man1/chfn.1)
-InstallSymlink(chpass.1 libexec/darling/usr/share/man/man1/chsh.1)
+InstallSymlink(at.1 ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/man/man1/atq.1)
+InstallSymlink(at.1 ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/man/man1/atrm.1)
+InstallSymlink(at.1 ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/man/man1/batch.1)
+InstallSymlink(chpass.1 ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/man/man1/chfn.1)
+InstallSymlink(chpass.1 ${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/man/man1/chsh.1)
 
 install(FILES
 	getty.tproj/gettytab.5

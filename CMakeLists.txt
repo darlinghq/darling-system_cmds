@@ -40,7 +40,7 @@ add_compile_options(
 add_darling_executable(ac ac.tproj/ac.c)
 add_darling_executable(accton accton.tproj/accton.c)
 add_darling_executable(arch arch.tproj/arch.c)
-target_link_libraries(arch ${CoreFoundation})
+target_link_libraries(arch CoreFoundation)
 add_darling_executable(at
 	at.tproj/at.c
 	at.tproj/panic.c

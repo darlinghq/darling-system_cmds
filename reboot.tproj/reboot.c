@@ -62,8 +62,9 @@ __unused static const char rcsid[] =
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #if !TARGET_OS_EMBEDDED
-#include "kextmanager.h"
-#include <IOKit/kext/kextmanager_types.h>
+// Darling doesn't have any kernel extensions
+//#include "KextManager.h"
+//#include <IOKit/kext/kextmanager_types.h>
 #endif
 #include <mach/mach_port.h>		// allocate
 #include <mach/mach.h>			// task_self, etc
@@ -314,6 +315,7 @@ get_pageins(void)
 int
 reserve_reboot(void)
 {
+	/*
 	int rval = ELAST + 1;
 	kern_return_t macherr = KERN_FAILURE;
 	mach_port_t kxport, tport = MACH_PORT_NULL, myport = MACH_PORT_NULL;
@@ -361,5 +363,7 @@ finish:
 		mach_port_mod_refs(tport, myport, MACH_PORT_RIGHT_RECEIVE, -1);
 
 	return rval;
+	*/
+	return 0;
 }
 #endif

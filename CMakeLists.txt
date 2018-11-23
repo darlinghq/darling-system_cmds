@@ -33,7 +33,6 @@ include_directories(
 add_compile_options(
 	-nostdinc
 	-fPIC
-	-Wno-everything
 	-fblocks
 )
 
@@ -142,7 +141,7 @@ add_darling_executable(pwd_mkdb
 	pwd_mkdb.tproj/pwd_mkdb.c
 )
 target_compile_definitions(pwd_mkdb PRIVATE _PW_NAME_LEN=MAXLOGNAME _PW_YPTOKEN="__YP!")
-#add_darling_executable(reboot reboot.tproj/reboot.c) kextmanager.h
+add_darling_executable(reboot reboot.tproj/reboot.c)
 add_darling_executable(sa
 	sa.tproj/db.c
 	sa.tproj/main.c
@@ -179,7 +178,7 @@ install(TARGETS at arch vm_stat getconf lsmp hostinfo login-exe DESTINATION libe
 install(TARGETS zic ac vipw vifs sysctl zdump pwd_mkdb mkfile accton sa purge sysctl
 	DESTINATION libexec/darling/usr/sbin)
 
-install(TARGETS nologin dynamic_pager dmesg DESTINATION libexec/darling/sbin)
+install(TARGETS nologin reboot dynamic_pager dmesg DESTINATION libexec/darling/sbin)
 
 install(TARGETS getty atrun DESTINATION libexec/darling/usr/libexec
 	PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ

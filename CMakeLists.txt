@@ -1,7 +1,9 @@
 project(system_cmds)
 
 include_directories(
-	${CMAKE_SOURCE_DIR}/kernel-include
+	${CMAKE_SOURCE_DIR}/kernel-include/bsd
+	${CMAKE_SOURCE_DIR}/kernel-include/libkern
+	${CMAKE_SOURCE_DIR}/kernel-include/osfmk
 	${CMAKE_SOURCE_DIR}/platform-include
 	${CMAKE_SOURCE_DIR}/src/libc/stdtime/FreeBSD
 	${CMAKE_SOURCE_DIR}/src/libc/include/NetBSD

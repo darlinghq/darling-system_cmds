@@ -1,37 +1,5 @@
 project(system_cmds)
 
-include_directories(
-	${CMAKE_SOURCE_DIR}/kernel-include/bsd
-	${CMAKE_SOURCE_DIR}/kernel-include/libkern
-	${CMAKE_SOURCE_DIR}/kernel-include/osfmk
-	${CMAKE_SOURCE_DIR}/platform-include
-	${CMAKE_SOURCE_DIR}/src/libc/stdtime/FreeBSD
-	${CMAKE_SOURCE_DIR}/src/libc/include/NetBSD
-	${CMAKE_SOURCE_DIR}/src/libc/include
-	${CMAKE_SOURCE_DIR}/src/libc/gen
-	${CMAKE_SOURCE_DIR}/src/external/corefoundation/Headers
-	${CMAKE_BINARY_DIR}/src/external/corefoundation/Headers
-	${CMAKE_SOURCE_DIR}/src/external/foundation/Headers
-	${CMAKE_SOURCE_DIR}/src/external/IOKitUser
-	${CMAKE_SOURCE_DIR}/kernel-include/iokit
-	${CMAKE_SOURCE_DIR}/src/libinfo/include
-	${CMAKE_SOURCE_DIR}/src/libc/darwin
-	${CMAKE_SOURCE_DIR}/src/external/openpam/include
-	${CMAKE_SOURCE_DIR}/src/OpenDirectory
-	${CMAKE_SOURCE_DIR}/src/OpenDirectory/CFOpenDirectory
-	${CMAKE_SOURCE_DIR}/src/libutil
-	${CMAKE_SOURCE_DIR}/src/external/libobjc2
-	${CMAKE_SOURCE_DIR}/src/ncurses/include
-	${CMAKE_SOURCE_DIR}/platform-include/mach
-	${CMAKE_SOURCE_DIR}/src/external/libdispatch/include
-	${CMAKE_SOURCE_DIR}/src/libinfo/membership.subproj
-	${CMAKE_SOURCE_DIR}/src/kernel/libsyscall/wrappers/libproc
-	${CMAKE_SOURCE_DIR}/src/external/corefoundation
-	${CMAKE_SOURCE_DIR}/src/external/libclosure
-	${CMAKE_SOURCE_DIR}/src/launchd/liblaunch
-	${CMAKE_SOURCE_DIR}/src/libinfo/nis.subproj
-)
-
 add_compile_options(
 	-nostdinc
 	-fPIC

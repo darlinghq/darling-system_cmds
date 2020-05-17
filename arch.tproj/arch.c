@@ -76,8 +76,9 @@ static const CPUTypes knownArchs[] = {
 #if defined(__i386__) || defined(__x86_64__)
     {"i386", CPU_TYPE_I386},
     {"x86_64", CPU_TYPE_X86_64},
-#elif defined(__arm__)
+#elif defined(__arm__) || defined(__arm64__)
     {"arm", CPU_TYPE_ARM},
+    {"arm64", CPU_TYPE_ARM64},
 #else
 #error "Unsupported architecture"
 #endif
@@ -99,9 +100,9 @@ extern char **environ;
 #if defined(__i386__) || defined(__x86_64__)
 #define NATIVE_32	"i386"
 #define NATIVE_64	"x86_64"
-#elif defined(__arm__)
+#elif defined(__arm__) || defined(__arm64__)
 #define NATIVE_32	"arm"
-#define NATIVE_64	NULL
+#define NATIVE_64	"arm64"
 #else
 #error "Unsupported architecture"
 #endif

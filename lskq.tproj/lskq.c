@@ -21,6 +21,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -32,8 +33,14 @@
 #include <sys/event.h>
 #include <sys/time.h>
 #include <sys/proc_info.h>
+#include <sys/param.h>
+#include <pthread/pthread.h>
 #include <mach/message.h>
+#define PRIVATE
 #include <libproc.h>
+#undef PRIVATE
+#include <os/assumes.h>
+#include <os/overflow.h>
 
 #include "common.h"
 
@@ -125,25 +132,38 @@ fflags_build(struct kevent_extinfo *info, char *str, int len)
 
 	case EVFILT_TIMER: {
 		snprintf(str, len, "%c%c%c%c%c  ",
-			(ff & NOTE_SECONDS)    ? 's' :
-			(ff & NOTE_USECONDS)   ? 'u' :
-			(ff & NOTE_NSECONDS)   ? 'n' : '?',
-			(ff & NOTE_ABSOLUTE)   ? 'a' : '-',
-			(ff & NOTE_CRITICAL)   ? 'c' : '-',
-			(ff & NOTE_BACKGROUND) ? 'b' : '-',
-			(ff & NOTE_LEEWAY)     ? 'l' : '-'
+			(ff & NOTE_SECONDS)              ? 's' :
+			(ff & NOTE_USECONDS)             ? 'u' :
+			(ff & NOTE_NSECONDS)             ? 'n' :
+			(ff & NOTE_MACHTIME)             ? 'm' : '?',
+			(ff & NOTE_ABSOLUTE)             ? 'a' :
+			(ff & NOTE_MACH_CONTINUOUS_TIME) ? 'A' : '-',
+			(ff & NOTE_CRITICAL)             ? 'c' : '-',
+			(ff & NOTE_BACKGROUND)           ? 'b' : '-',
+			(ff & NOTE_LEEWAY)               ? 'l' : '-'
 		);
 		break;
 	}
 
-	case EVFILT_USER: {
+	case EVFILT_USER:
 		snprintf(str, len, "%c%c%c    ",
 			(ff & NOTE_TRIGGER) ? 't' : '-',
 			(ff & NOTE_FFAND)   ? 'a' : '-',
 			(ff & NOTE_FFOR)    ? 'o' : '-'
 		);
 		break;
-	}
+
+	case EVFILT_WORKLOOP:
+		snprintf(str, len, "%c%c%c%c%c  ",
+			(ff & NOTE_WL_THREAD_REQUEST) ? 't' :
+			(ff & NOTE_WL_SYNC_WAIT)      ? 'w' :
+			(ff & NOTE_WL_SYNC_IPC)       ? 'i' : '-',
+			(ff & NOTE_WL_SYNC_WAKE)      ? 'W' : '-',
+			(ff & NOTE_WL_UPDATE_QOS)     ? 'q' : '-',
+			(ff & NOTE_WL_DISCOVER_OWNER) ? 'o' : '-',
+			(ff & NOTE_WL_IGNORE_ESTALE)  ? 'e' : '-'
+		);
+		break;
 
 	default:
 		snprintf(str, len, "");
@@ -157,10 +177,29 @@ fflags_build(struct kevent_extinfo *info, char *str, int len)
 static inline int
 filter_is_fd_type(int filter)
 {
-	if (filter <= EVFILT_READ && filter >= EVFILT_VNODE) {
+	switch (filter) {
+	case EVFILT_VNODE ... EVFILT_READ:
+	case EVFILT_SOCK:
+	case EVFILT_NW_CHANNEL:
 		return 1;
-	} else {
+	default:
 		return 0;
+	}
+}
+
+static const char *
+thread_qos_name(uint8_t th_qos)
+{
+	switch (th_qos) {
+	case 0: return "--";
+	case 1: return "MT";
+	case 2: return "BG";
+	case 3: return "UT";
+	case 4: return "DF";
+	case 5: return "IN";
+	case 6: return "UI";
+	case 7: return "MG";
+	default: return "??";
 	}
 }
 
@@ -252,6 +291,10 @@ print_ident(uint64_t ident, int16_t filter, int width)
 		printf("%#*llx ", width, ident);
 		break;
 
+	case EVFILT_WORKLOOP:
+		printf("%#*llx ", width, ident);
+		break;
+
 	default:
 		printf("%*llu ", width, ident);
 		break;
@@ -260,57 +303,166 @@ print_ident(uint64_t ident, int16_t filter, int width)
 }
 
 static void
-print_kqfd(int kqfd, int width)
+print_kqid(int state, uint64_t kqid)
 {
-	if (kqfd == -1) {
-		printf("%*s ", width, "wq");
+	if (state & KQ_WORKQ) {
+		printf("%18s ", "wq");
+	} else if (state & KQ_WORKLOOP) {
+		printf("%#18" PRIx64 " ", kqid);
 	} else {
-		printf("%*u ", width, kqfd);
+		printf("fd %15" PRIi64 " ", kqid);
 	}
 }
 
 #define PROCNAME_WIDTH 20
 
 static void
-print_kq_info(int pid, const char *procname, int kqfd, int state)
+print_kq_info(int pid, const char *procname, uint64_t kqid, int state)
 {
 	if (raw) {
 		printf("%5u ", pid);
-		print_kqfd(kqfd, 5);
+		print_kqid(state, kqid);
 		printf("%#10x ", state);
 	} else {
 		char tmpstr[PROCNAME_WIDTH+1];
 		strlcpy(tmpstr, shorten_procname(procname, PROCNAME_WIDTH), PROCNAME_WIDTH+1);
 		printf("%-*s ", PROCNAME_WIDTH, tmpstr);
 		printf("%5u ", pid);
-		print_kqfd(kqfd, 5);
+		print_kqid(state, kqid);
 		printf(" %c%c%c ",
 				(state & KQ_SLEEP)    ? 'k' : '-',
 				(state & KQ_SEL)      ? 's' : '-',
-				(state & KQ_KEV32)    ? '3' :
-				(state & KQ_KEV64)    ? '6' :
-				(state & KQ_KEV_QOS)  ? 'q' : '-'
+				(state & KQ_WORKQ)    ? 'q' :
+				(state & KQ_WORKLOOP) ? 'l' : '-'
 			);
 	}
 }
 
+enum kqtype {
+	KQTYPE_FD,
+	KQTYPE_DYNAMIC
+};
+
+#define POLICY_TIMESHARE        1
+#define POLICY_RR               2
+#define POLICY_FIFO             4
+
 static int
-process_kqueue_on_fd(int pid, const char *procname, int kqfd, struct proc_fdinfo *fdlist, int nfds)
+process_kqueue(int pid, const char *procname, enum kqtype type, uint64_t kqid,
+		struct proc_fdinfo *fdlist, int nfds)
 {
 	int ret, i, nknotes;
 	char tmpstr[256];
 	int maxknotes = 256; /* arbitrary starting point */
+	int kq_state;
+	bool is_kev_64, is_kev_qos;
 	int err = 0;
 	bool overflow = false;
+	int fd;
+	bool dynkq_printed = false;
 
 	/*
 	 * get the basic kqueue info
 	 */
 	struct kqueue_fdinfo kqfdinfo = {};
-	ret = proc_pidfdinfo(pid, kqfd, PROC_PIDFDKQUEUEINFO, &kqfdinfo, sizeof(kqfdinfo));
-	if (ret != sizeof(kqfdinfo) && kqfd != -1) {
+	struct kqueue_dyninfo kqinfo = {};
+	switch (type) {
+	case KQTYPE_FD:
+		ret = proc_pidfdinfo(pid, (int)kqid, PROC_PIDFDKQUEUEINFO, &kqfdinfo, sizeof(kqfdinfo));
+		fd = (int)kqid;
+		break;
+	case KQTYPE_DYNAMIC:
+		ret = proc_piddynkqueueinfo(pid, PROC_PIDDYNKQUEUE_INFO, kqid, &kqinfo, sizeof(kqinfo));
+		break;
+	default:
+		os_crash("invalid kqueue type");
+	}
+
+	if (type == KQTYPE_FD && (int)kqid != -1) {
+		if (ret != sizeof(kqfdinfo)) {
 		/* every proc has an implicit workq kqueue, dont warn if its unused */
-		fprintf(stderr, "WARN: FD table changed (pid %i, kq %i)\n", pid, kqfd);
+			fprintf(stderr, "WARN: FD table changed (pid %i, kq %i)\n", pid,
+					fd);
+		}
+	} else if (type == KQTYPE_DYNAMIC) {
+		if (ret < sizeof(struct kqueue_info)) {
+			fprintf(stderr, "WARN: kqueue missing (pid %i, kq %#" PRIx64 ")\n",
+					pid, kqid);
+		} else {
+			kqfdinfo.kqueueinfo = kqinfo.kqdi_info;
+		}
+		if (verbose && ret >= sizeof(struct kqueue_dyninfo)) {
+			print_kq_info(pid, procname, kqid, kqinfo.kqdi_info.kq_state);
+
+			if (kqinfo.kqdi_owner) {
+				printf("%#18llx ", kqinfo.kqdi_owner);    // ident
+				printf("%-9s ", "WL owned"); // filter
+			} else if (kqinfo.kqdi_servicer) {
+				printf("%#18llx ", kqinfo.kqdi_servicer); // ident
+				printf("%-9s ", "WL"); // filter
+			} else {
+				printf("%18s ", "-"); // ident
+				printf("%-9s ", "WL"); // filter
+			}
+			dynkq_printed = true;
+
+			if (raw) {
+				printf("%-10s ", " "); // fflags
+				printf("%-10s ", " "); // flags
+				printf("%-10s ", " "); // evst
+			} else {
+				const char *reqstate = "???";
+
+				switch (kqinfo.kqdi_request_state) {
+				case WORKQ_TR_STATE_IDLE:
+					reqstate = "";
+					break;
+				case WORKQ_TR_STATE_NEW:
+					reqstate = "new";
+					break;
+				case WORKQ_TR_STATE_QUEUED:
+					reqstate = "queued";
+					break;
+				case WORKQ_TR_STATE_CANCELED:
+					reqstate = "canceled";
+					break;
+				case WORKQ_TR_STATE_BINDING:
+					reqstate = "binding";
+					break;
+				case WORKQ_TR_STATE_BOUND:
+					reqstate = "bound";
+					break;
+				}
+
+				printf("%-8s ", reqstate); // fdtype
+				char policy_type;
+				switch (kqinfo.kqdi_pol) {
+				case POLICY_RR:
+					policy_type = 'R';
+					break;
+				case POLICY_FIFO:
+					policy_type = 'F';
+				case POLICY_TIMESHARE:
+				case 0:
+				default:
+					policy_type = '-';
+					break;
+				}
+				snprintf(tmpstr, 4, "%c%c%c", (kqinfo.kqdi_pri == 0)?'-':'P', policy_type, (kqinfo.kqdi_cpupercent == 0)?'-':'%');
+				printf("%-7s ", tmpstr); // fflags
+				printf("%-15s ", " "); // flags
+				printf("%-15s ", " "); // evst
+			}
+
+			if (!raw && kqinfo.kqdi_pri != 0) {
+				printf("%3d ", kqinfo.kqdi_pri); //qos
+			} else {
+				int qos = MAX(MAX(kqinfo.kqdi_events_qos, kqinfo.kqdi_async_qos),
+					kqinfo.kqdi_sync_waiter_qos);
+				printf("%3s ", thread_qos_name(qos)); //qos
+			}
+			printf("\n");
+		}
 	}
 
 	/*
@@ -322,25 +474,36 @@ process_kqueue_on_fd(int pid, const char *procname, int kqfd, struct proc_fdinfo
 		kqextinfo = malloc(sizeof(struct kevent_extinfo) * maxknotes);
 	}
 	if (!kqextinfo) {
-		perror("failed allocating memory");
 		err = errno;
+		perror("failed allocating memory");
 		goto out;
 	}
 
 	errno = 0;
-	nknotes = proc_pidfdinfo(pid, kqfd, PROC_PIDFDKQUEUE_EXTINFO, kqextinfo,
-			sizeof(struct kevent_extinfo) * maxknotes);
+	switch (type) {
+	case KQTYPE_FD:
+		nknotes = proc_pidfdinfo(pid, fd, PROC_PIDFDKQUEUE_EXTINFO,
+				kqextinfo, sizeof(struct kevent_extinfo) * maxknotes);
+		break;
+	case KQTYPE_DYNAMIC:
+		nknotes = proc_piddynkqueueinfo(pid, PROC_PIDDYNKQUEUE_EXTINFO, kqid,
+				kqextinfo, sizeof(struct kevent_extinfo) * maxknotes);
+		break;
+	default:
+		os_crash("invalid kqueue type");
+	}
+
 	if (nknotes <= 0) {
 		if (errno == 0) {
 			/* proc_*() can't distinguish between error and empty list */
 		} else if (errno == EAGAIN) {
 			goto again;
 		} else if (errno == EBADF) {
-			fprintf(stderr, "WARN: FD table changed (pid %i, kq %i)\n", pid, kqfd);
+			fprintf(stderr, "WARN: FD table changed (pid %i, kq %#" PRIx64 ")\n", pid, kqid);
 			goto out;
 		} else {
-			perror("failed to get extended kqueue info");
 			err = errno;
+			perror("failed to get extended kqueue info");
 			goto out;
 		}
 	}
@@ -356,10 +519,14 @@ process_kqueue_on_fd(int pid, const char *procname, int kqfd, struct proc_fdinfo
 		overflow = true;
 	}
 
+	kq_state = kqfdinfo.kqueueinfo.kq_state;
+	is_kev_64 = (kq_state & PROC_KQUEUE_64);
+	is_kev_qos = (kq_state & PROC_KQUEUE_QOS);
+
 	if (nknotes == 0) {
-		if (!ignore_empty) {
+		if (!ignore_empty && !dynkq_printed) {
 			/* for empty kqueues, print a single empty entry */
-			print_kq_info(pid, procname, kqfd, kqfdinfo.kqueueinfo.kq_state);
+			print_kq_info(pid, procname, kqid, kq_state);
 			printf("%18s \n", "-");
 		}
 		goto out;
@@ -368,7 +535,7 @@ process_kqueue_on_fd(int pid, const char *procname, int kqfd, struct proc_fdinfo
 	for (i = 0; i < nknotes; i++) {
 		struct kevent_extinfo *info = &kqextinfo[i];
 
-		print_kq_info(pid, procname, kqfd, kqfdinfo.kqueueinfo.kq_state);
+		print_kq_info(pid, procname, kqid, kqfdinfo.kqueueinfo.kq_state);
 		print_ident(info->kqext_kev.ident, info->kqext_kev.filter, 18);
 		printf("%-9s ", filt_name(info->kqext_kev.filter));
 
@@ -377,7 +544,6 @@ process_kqueue_on_fd(int pid, const char *procname, int kqfd, struct proc_fdinfo
 			printf("%#10x ", info->kqext_kev.flags);
 			printf("%#10x ", info->kqext_status);
 		} else {
-
 			/* for kevents attached to file descriptors, print the type of FD (file, socket, etc) */
 			const char *fdstr = "";
 			if (filter_is_fd_type(info->kqext_kev.filter)) {
@@ -413,32 +579,39 @@ process_kqueue_on_fd(int pid, const char *procname, int kqfd, struct proc_fdinfo
 			);
 
 			unsigned st = info->kqext_status;
-			printf("%c%c%c%c %c%c%c%c%c",
-					(st & KN_ACTIVE)     ? 'a' : '-',
-					(st & KN_QUEUED)     ? 'q' : '-',
-					(st & KN_DISABLED)   ? 'd' : '-',
-					(st & KN_STAYQUEUED) ? 's' : '-',
+			printf("%c%c%c%c%c %c%c%c%c %c%c%c ",
+					(st & KN_ACTIVE)      ? 'a' : '-',
+					(st & KN_QUEUED)      ? 'q' : '-',
+					(st & KN_DISABLED)    ? 'd' : '-',
+					(st & KN_SUPPRESSED)  ? 'p' : '-',
+					(st & KN_STAYACTIVE)  ? 's' : '-',
 
-					(st & KN_DROPPING)   ? 'o' : '-',
-					(st & KN_USEWAIT)    ? 'u' : '-',
-					(st & KN_ATTACHING)  ? 'c' : '-',
-					(st & KN_DEFERDROP)  ? 'f' : '-',
-					(st & KN_TOUCH)      ? 't' : '-'
+					(st & KN_DROPPING)    ? 'd' : '-',
+					(st & KN_LOCKED)      ? 'l' : '-',
+					(st & KN_POSTING)     ? 'P' : '-',
+					(st & KN_MERGE_QOS)   ? 'm' : '-',
+
+					(st & KN_DEFERDELETE) ? 'D' : '-',
+					(st & KN_REQVANISH)   ? 'v' : '-',
+					(st & KN_VANISHED)    ? 'n' : '-'
 			);
 		}
+
+		printf("%3s ", thread_qos_name(info->kqext_kev.qos));
 
 		printf("%#18llx ", (unsigned long long)info->kqext_kev.data);
 
 		if (verbose) {
 			printf("%#18llx ", (unsigned long long)info->kqext_kev.udata);
-			if (kqfdinfo.kqueueinfo.kq_state & (KQ_KEV64|KQ_KEV_QOS)) {
+			if (is_kev_qos || is_kev_64) {
 				printf("%#18llx ", (unsigned long long)info->kqext_kev.ext[0]);
 				printf("%#18llx ", (unsigned long long)info->kqext_kev.ext[1]);
-			}
-			if (kqfdinfo.kqueueinfo.kq_state & KQ_KEV_QOS) {
-				printf("%#18llx ", (unsigned long long)info->kqext_kev.ext[2]);
-				printf("%#18llx ", (unsigned long long)info->kqext_kev.ext[3]);
-				printf("%#10lx ", (unsigned long)info->kqext_kev.xflags);
+
+				if (is_kev_qos) {
+					printf("%#18llx ", (unsigned long long)info->kqext_kev.ext[2]);
+					printf("%#18llx ", (unsigned long long)info->kqext_kev.ext[3]);
+					printf("%#10lx ", (unsigned long)info->kqext_kev.xflags);
+				}
 			}
 		}
 
@@ -446,8 +619,8 @@ process_kqueue_on_fd(int pid, const char *procname, int kqfd, struct proc_fdinfo
 	}
 
 	if (overflow) {
-		printf("   ***** output truncated (>=%i knotes on kq %i, proc %i) *****\n",
-				nknotes, kqfd, pid);
+		printf("   ***** output truncated (>=%i knotes on kq %" PRIu64 ", proc %i) *****\n",
+				nknotes, kqid, pid);
 	}
 
  out:
@@ -460,9 +633,45 @@ process_kqueue_on_fd(int pid, const char *procname, int kqfd, struct proc_fdinfo
 }
 
 static int
+pid_kqids(pid_t pid, kqueue_id_t **kqids_out)
+{
+	static int kqids_len = 256;
+	static kqueue_id_t *kqids = NULL;
+	static uint32_t kqids_size;
+
+	int nkqids;
+
+retry:
+	if (os_mul_overflow(sizeof(kqueue_id_t), kqids_len, &kqids_size)) {
+		assert(kqids_len > PROC_PIDDYNKQUEUES_MAX);
+		kqids_len = PROC_PIDDYNKQUEUES_MAX;
+		goto retry;
+	}
+	if (!kqids) {
+		kqids = malloc(kqids_size);
+		os_assert(kqids != NULL);
+	}
+
+	nkqids = proc_list_dynkqueueids(pid, kqids, kqids_size);
+	if (nkqids > kqids_len && kqids_len < PROC_PIDDYNKQUEUES_MAX) {
+		kqids_len *= 2;
+		if (kqids_len > PROC_PIDDYNKQUEUES_MAX) {
+			kqids_len = PROC_PIDDYNKQUEUES_MAX;
+		}
+		free(kqids);
+		kqids = NULL;
+		goto retry;
+	}
+
+	*kqids_out = kqids;
+	return MIN(nkqids, kqids_len);
+}
+
+static int
 process_pid(pid_t pid)
 {
-	int i, nfds;
+	int i, nfds, nkqids;
+	kqueue_id_t *kqids;
 	int ret = 0;
 	int maxfds = 256; /* arbitrary starting point */
 	struct proc_fdinfo *fdlist = NULL;
@@ -473,21 +682,21 @@ process_pid(pid_t pid)
 		fdlist = malloc(sizeof(struct proc_fdinfo) * maxfds);
 	}
 	if (!fdlist) {
-		perror("failed to allocate");
 		ret = errno;
+		perror("failed to allocate");
 		goto out;
 	}
 
 	nfds = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fdlist,
 			sizeof(struct proc_fdinfo) * maxfds);
 	if (nfds <= 0) {
+		ret = errno;
 		fprintf(stderr, "%s: failed enumerating file descriptors of process %i: %s",
-				self, pid, strerror(errno));
-		if (errno == EPERM && geteuid() != 0) {
+				self, pid, strerror(ret));
+		if (ret == EPERM && geteuid() != 0) {
 			fprintf(stderr, " (are you root?)");
 		}
 		fprintf(stderr, "\n");
-		ret = errno;
 		goto out;
 	}
 
@@ -514,18 +723,33 @@ process_pid(pid_t pid)
 	}
 
 	/* handle the special workq kq */
-	ret = process_kqueue_on_fd(pid, procname, -1, fdlist, nfds);
+	ret = process_kqueue(pid, procname, KQTYPE_FD, -1, fdlist, nfds);
 	if (ret) {
 		goto out;
 	}
 
 	for (i = 0; i < nfds; i++) {
 		if (fdlist[i].proc_fdtype == PROX_FDTYPE_KQUEUE) {
-			ret = process_kqueue_on_fd(pid, procname, fdlist[i].proc_fd, fdlist, nfds);
+			ret = process_kqueue(pid, procname, KQTYPE_FD,
+					(uint64_t)fdlist[i].proc_fd, fdlist, nfds);
 			if (ret) {
 				goto out;
 			}
 		}
+	}
+
+	nkqids = pid_kqids(pid, &kqids);
+
+	for (i = 0; i < nkqids; i++) {
+		ret = process_kqueue(pid, procname, KQTYPE_DYNAMIC, kqids[i], fdlist, nfds);
+		if (ret) {
+			goto out;
+		}
+	}
+
+	if (nkqids >= PROC_PIDDYNKQUEUES_MAX) {
+		printf("   ***** output truncated (>=%i dynamic kqueues in proc %i) *****\n",
+				nkqids, pid);
 	}
 
  out:
@@ -562,8 +786,8 @@ process_all_pids(void)
 		} else if (errno == EAGAIN) {
 			goto again;
 		} else {
-			perror("failed enumerating pids");
 			ret = errno;
+			perror("failed enumerating pids");
 			goto out;
 		}
 	}
@@ -580,7 +804,8 @@ process_all_pids(void)
 		/* listpids gives us pid 0 for some reason */
 		if (pids[i]) {
 			ret = process_pid(pids[i]);
-			if (ret) {
+			/* ignore races with processes exiting */
+			if (ret && ret != ESRCH) {
 				goto out;
 			}
 		}
@@ -598,24 +823,33 @@ out:
 static void
 cheatsheet(void)
 {
+	const char *bold = "\033[1m";
+	const char *reset = "\033[0m";
+	if (!isatty(STDERR_FILENO)) {
+		bold = reset = "";
+	}
+
 	fprintf(stderr, "\nFilter-independent flags:\n\n\
-\033[1mcommand                pid    kq kqst              ident filter    fdtype   fflags      flags          evst\033[0m\n\
-\033[1m-------------------- ----- ----- ---- ------------------ --------- -------- ------- --------------- ----------\033[0m\n\
-                                                                                              ┌ EV_UDATA_SPECIFIC\n\
-                                                                                EV_DISPATCH ┐ │┌ EV_FLAG0 (EV_POLL)\n\
-                                                                                  EV_CLEAR ┐│ ││┌ EV_FLAG1 (EV_OOBAND)\n\
-                                                                               EV_ONESHOT ┐││ │││┌ EV_EOF\n\
-                                                                              EV_RECEIPT ┐│││ ││││┌ EV_ERROR\n\
-                                                                                         ││││ │││││\n\
-\033[1mlaunchd                  1     4  ks- netbiosd       250 PROC               ------- andx r1cs upboe aqds oucft\033[0m \n\
-                               │  │││                                               ││││            ││││ │││││\n\
-        kqueue file descriptor ┘  │││                                        EV_ADD ┘│││  KN_ACTIVE ┘│││ ││││└ KN_TOUCH\n\
-                         KQ_SLEEP ┘││                                      EV_ENABLE ┘││   KN_QUEUED ┘││ │││└ KN_DEFERDROP\n\
-                            KQ_SEL ┘│                                      EV_DISABLE ┘│  KN_DISABLED ┘│ ││└ KN_ATTACHING\n\
-                          KEV32 (3) ┤                                        EV_DELETE ┘ KN_STAYQUEUED ┘ │└ KN_USEWAIT\n\
-                          KEV64 (6) ┤                                                                    └ KN_DROPPING\n\
-                        KEV_QOS (q) ┘\n\
-	\n");
+%s\
+command                pid                 kq kqst               knid filter    fdtype   fflags       flags           evst      qos%s\n%s\
+-------------------- ----- ------------------ ---- ------------------ --------- -------- ------- --------------- -------------- ---%s\n\
+                                                                                                           ┌ EV_UDATA_SPECIFIC\n\
+                                                                                             EV_DISPATCH ┐ │┌ EV_FLAG0 (EV_POLL)\n\
+                                                                                               EV_CLEAR ┐│ ││┌ EV_FLAG1 (EV_OOBAND)\n\
+                                                                                            EV_ONESHOT ┐││ │││┌ EV_EOF\n\
+                                                                                           EV_RECEIPT ┐│││ ││││┌ EV_ERROR\n\
+                                                                                                      ││││ │││││\n%s\
+launchd                  1                  4  ks- netbiosd       250 PROC               ------- andx r1cs upboe aqdps dlPm Dvn  IN%s\n\
+                                            │  │││                                               ││││            │││││ ││││ │││\n\
+          kqueue file descriptor/dynamic ID ┘  │││                                        EV_ADD ┘│││  KN_ACTIVE ┘││││ ││││ ││└ KN_VANISHED\n\
+                                      KQ_SLEEP ┘││                                      EV_ENABLE ┘││   KN_QUEUED ┘│││ ││││ │└ KN_REQVANISH\n\
+                                         KQ_SEL ┘│                                      EV_DISABLE ┘│  KN_DISABLED ┘││ ││││ └ KN_DEFERDELETE\n\
+                                    KQ_WORKQ (q) ┤                                        EV_DELETE ┘ KN_SUPPRESSED ┘│ ││││\n\
+                                 KQ_WORKLOOP (l) ┘                                                     KN_STAYACTIVE ┘ ││││\n\
+                                                                                                                       ││││\n\
+                                                                                                           KN_DROPPING ┘││└ KN_MERGE_QOS\n\
+                                                                                                              KN_LOCKED ┘└ KN_POSTING\n\
+	\n", bold, reset, bold, reset, bold, reset);
 }
 
 static void
@@ -628,20 +862,21 @@ static void
 print_header(void)
 {
 	if (raw) {
-		printf("  pid    kq       kqst              ident filter        fflags      flags       evst               data");
-		if (verbose) {
-			printf("              udata               ext0               ext1               ext2               ext3     xflags");
-		}
-		printf("\n");
-		printf("----- ----- ---------- ------------------ --------- ---------- ---------- ---------- ------------------");
-
+		printf("  pid                 kq       kqst               knid filter        fflags      flags       evst qos               data");
 	} else {
-		printf("command                pid    kq kqst              ident filter    fdtype   fflags       flags         evst                 data");
-		if (verbose) {
-			printf("              udata               ext0               ext1               ext2               ext3     xflags");
-		}
-		printf("\n");
-		printf("-------------------- ----- ----- ---- ------------------ --------- -------- ------- --------------- ---------- -----------------");
+		printf("command                pid                 kq kqst               knid filter    fdtype   fflags       flags           evst      qos               data");
+	}
+
+	if (verbose) {
+		printf("              udata               ext0               ext1               ext2               ext3     xflags");
+	}
+
+	printf("\n");
+
+	if (raw) {
+		printf("----- ------------------ ---------- ------------------ --------- ---------- ---------- ---------- --- ------------------");
+	} else {
+		printf("-------------------- ----- ------------------ ---- ------------------ --------- -------- ------- --------------- -------------- --- ------------------");
 	}
 
 	if (verbose) {

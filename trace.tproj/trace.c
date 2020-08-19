@@ -158,7 +158,7 @@ typedef struct event *event_t;
 struct event {
 	event_t	  ev_next;
 
-	uintptr_t ev_thread;
+	uint64_t ev_thread;
 	uint32_t  ev_debugid;
 	uint64_t  ev_timestamp;
 };
@@ -168,10 +168,10 @@ typedef struct lookup *lookup_t;
 struct lookup {
 	lookup_t  lk_next;
 
-	uintptr_t lk_thread;
-	uintptr_t lk_dvp;
-	long	 *lk_pathptr;
-	long	  lk_pathname[NUMPARMS + 1];
+	uint64_t lk_thread;
+	uint64_t lk_dvp;
+	int64_t	 *lk_pathptr;
+	int64_t	  lk_pathname[NUMPARMS + 1];
 };
 
 typedef struct threadmap *threadmap_t;
@@ -179,8 +179,8 @@ typedef struct threadmap *threadmap_t;
 struct threadmap {
 	threadmap_t	tm_next;
 
-	uintptr_t	tm_thread;
-	uintptr_t	tm_pthread;
+	uint64_t	tm_thread;
+	uint64_t	tm_pthread;
 	boolean_t	tm_deleteme;
 	char		tm_command[MAXCOMLEN + 1];
 };
@@ -219,7 +219,7 @@ static void codesc_find_dupes(void);
 static int read_command_map(int, uint32_t);
 static void read_cpu_map(int);
 static void find_thread_command(kd_buf *, char **);
-static void create_map_entry(uintptr_t, char *);
+static void create_map_entry(uint64_t, char *);
 static void getdivisor();
 static unsigned long argtoul();
 
@@ -240,17 +240,17 @@ static void Log_trace();
 static void read_trace();
 static void signal_handler(int);
 static void signal_handler_RAW(int);
-static void delete_thread_entry(uintptr_t);
-static void find_and_insert_tmp_map_entry(uintptr_t, char *);
-static void create_tmp_map_entry(uintptr_t, uintptr_t);
-static void find_thread_name(uintptr_t, char **, boolean_t);
+static void delete_thread_entry(uint64_t);
+static void find_and_insert_tmp_map_entry(uint64_t, char *);
+static void create_tmp_map_entry(uint64_t, uint64_t);
+static void find_thread_name(uint64_t, char **, boolean_t);
 static void execute_process(char * const argv[]);
 
 static int  writetrace(int);
 static int  write_command_map(int);
 static int  debugid_compar(const void *, const void *);
 
-static threadmap_t find_thread_entry(uintptr_t);
+static threadmap_t find_thread_entry(uint64_t);
 
 static void saw_filter_class(uint8_t class);
 static void saw_filter_end_range(uint8_t end_class);
@@ -591,7 +591,7 @@ int write_command_map(int fd)
 
 
 static
-lookup_t handle_lookup_event(uintptr_t thread, int debugid, kd_buf *kdp)
+lookup_t handle_lookup_event(uint64_t thread, int debugid, kd_buf *kdp)
 {
 	lookup_t	lkp;
 	int		hashid;
@@ -640,7 +640,7 @@ lookup_t handle_lookup_event(uintptr_t thread, int debugid, kd_buf *kdp)
 
 
 static
-void delete_lookup_event(uintptr_t thread, lookup_t lkp_to_delete)
+void delete_lookup_event(uint64_t thread, lookup_t lkp_to_delete)
 {
 	lookup_t	lkp;
 	lookup_t	lkp_prev;
@@ -671,7 +671,7 @@ void delete_lookup_event(uintptr_t thread, lookup_t lkp_to_delete)
 
 
 static
-void insert_start_event(uintptr_t thread, int debugid, uint64_t now)
+void insert_start_event(uint64_t thread, int debugid, uint64_t now)
 {
 	event_t		evp;
 	int		hashid;
@@ -699,7 +699,7 @@ void insert_start_event(uintptr_t thread, int debugid, uint64_t now)
 
 
 static
-uint64_t consume_start_event(uintptr_t thread, int debugid, uint64_t now)
+uint64_t consume_start_event(uint64_t thread, int debugid, uint64_t now)
 {
 	event_t		evp;
 	event_t		evp_prev;
@@ -1006,7 +1006,7 @@ void read_trace(void)
 		uint64_t prev;
 		uint64_t prevdelta = 0;
 		uint32_t cpunum = 0;
-		uintptr_t thread;
+		uint64_t thread;
 		double	x = 0.0;
 		double	y = 0.0;
 		double  event_elapsed_time = 0;
@@ -1057,6 +1057,7 @@ void read_trace(void)
 			debugid = kdp->debugid;
 			debugid_base = debugid & DBG_FUNC_MASK;
 			now = kdp->timestamp & KDBG_TIMESTAMP_MASK;
+			cpunum = kdbg_get_cpu(kdp);
 
 			/*
 			 * Is this event from an IOP? If so, there will be no
@@ -1085,7 +1086,6 @@ void read_trace(void)
 				bias = now;
 			now -= bias;
 
-			cpunum = kdbg_get_cpu(kdp);
 			thread = kdp->arg5;
 
 			if (lines == 64 || firsttime)
@@ -1142,7 +1142,7 @@ void read_trace(void)
 
 			if ( !lkp) {
 				int t_debugid;
-				uintptr_t t_thread;
+				uint64_t t_thread;
 
 				if ((debugid & DBG_FUNC_START) || debugid == MACH_MAKERUNNABLE) {
 
@@ -1227,24 +1227,26 @@ void read_trace(void)
 					len -= 51;
 				else
 					len = 0;
-#ifdef __LP64__
+#if defined(__LP64__) || defined(__arm64__)
 
-				fprintf(output_file, "%-16lx %-51s %-16lx  %-2d %s\n", lkp->lk_dvp, &strptr[len], thread, cpunum, command);
+				fprintf(output_file, "%-16llx %-51s %-16" PRIx64 "  %-2d %s\n", (uint64_t)lkp->lk_dvp, &strptr[len], thread, cpunum, command);
 #else
-				fprintf(output_file, "%-8x   %-51s   %-8lx   %-2d  %s\n", (unsigned int)lkp->lk_dvp, &strptr[len], thread, cpunum, command);
+				fprintf(output_file, "%-8x   %-51s   %-8" PRIx64 "   %-2d  %s\n", (unsigned int)lkp->lk_dvp, &strptr[len], thread, cpunum, command);
 #endif
 				delete_lookup_event(thread, lkp);
 			} else if (debugid == TRACE_INFO_STRING) {
-#ifdef __LP64__
-				fprintf(output_file, "%-32s%-36s %-16lx  %-2d %s\n", (char *) &kdp->arg1, "", thread, cpunum, command);
+#if defined(__LP64__) || defined(__arm64__)
+				fprintf(output_file, "%-32s%-36s %-16" PRIx64 "  %-2d %s\n", (char *) &kdp->arg1, "", thread, cpunum, command);
 #else
-				fprintf(output_file, "%-16s%-46s   %-8lx   %-2d  %s\n", (char *) &kdp->arg1, "", thread, cpunum, command);
+				fprintf(output_file, "%-16s%-46s   %-8" PRIx64 "   %-2d  %s\n", (char *) &kdp->arg1, "", thread, cpunum, command);
 #endif
 			} else {
-#ifdef __LP64__
-				fprintf(output_file, "%-16lx %-16lx %-16lx %-16lx  %-16lx  %-2d %s\n", kdp->arg1, kdp->arg2, kdp->arg3, kdp->arg4, thread, cpunum, command);
+#if defined(__LP64__) || defined(__arm64__)
+				fprintf(output_file, "%-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 "  %-16" PRIx64 "  %-2d %s\n",
+					(uint64_t)kdp->arg1, (uint64_t)kdp->arg2, (uint64_t)kdp->arg3, (uint64_t)kdp->arg4, thread, cpunum, command);
 #else
-				fprintf(output_file, "%-8lx       %-8lx       %-8lx       %-8lx            %-8lx   %-2d  %s\n", kdp->arg1, kdp->arg2, kdp->arg3, kdp->arg4, thread, cpunum, command);
+				fprintf(output_file, "%-8" PRIx64 "       %-8" PRIx64 "       %-8" PRIx64 "       %-8" PRIx64 "            %-8" PRIx64 "   %-2d  %s\n",
+					(uint64_t)kdp->arg1, (uint64_t)kdp->arg2, (uint64_t)kdp->arg3, (uint64_t)kdp->arg4, thread, cpunum, command);
 #endif
 			}
 			lines++;
@@ -1293,12 +1295,15 @@ int main (int argc, char* argv[], char *envp[])
 			fprintf(stderr, "Could not re-execute: %d\n", errno);
 			exit(1);
 		}
-	} else {
+	}
+#if !defined(__arm64__)
+        else {
 		if (0 != reexec_to_match_kernel()) {
 			fprintf(stderr, "Could not re-execute: %d\n", errno);
 			exit(1);
 		}
 	}
+#endif
         if (setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS, IOPOL_PASSIVE) < 0) {
                 printf("setiopolicy failed\n");
                 exit(1);
@@ -2385,8 +2390,9 @@ parse_codefile(const char *filename)
 
 	if (stat_buf.st_size != 0)
 	{
-		if ((file_addr = mmap(0, file_size, PROT_READ|PROT_WRITE,
-				      MAP_PRIVATE|MAP_FILE, fd, 0)) == (char*) -1)
+		file_addr = mmap(0, file_size, PROT_READ | PROT_WRITE,
+				MAP_PRIVATE | MAP_FILE, fd, 0);
+		if (file_addr == MAP_FAILED)
 		{
 			printf("Error: Can't map file: %s\n", filename);
 			close(fd);
@@ -2426,7 +2432,7 @@ parse_codefile(const char *filename)
 	 */
 	count++;
 
-	// Grow the size of codesc to store new entries.
+	/* Grow the size of codesc to store new entries. */
 	size_t total_count = codesc_idx + count;
 	code_type_t *new_codesc = (code_type_t *)realloc(codesc, (total_count) * sizeof(code_type_t));
 
@@ -2437,10 +2443,11 @@ parse_codefile(const char *filename)
 	codesc = new_codesc;
 	bzero((char *)(codesc + codesc_idx), count * sizeof(code_type_t));
 
-	for (line = 1, j = 0; j < file_size && codesc_idx < total_count; codesc_idx++)
+	for (line = 1, j = 0; j < file_size && codesc_idx < total_count;
+			codesc_idx++)
 	{
 		/* Skip blank lines */
-		while (file_addr[j] == '\n')
+		while (j < file_size && file_addr[j] == '\n')
 		{
 			j++;
 			line++;
@@ -2459,7 +2466,7 @@ parse_codefile(const char *filename)
 			/* We didn't find a debugid code - skip this line */
 			if (verbose_flag)
 				printf("Error: while parsing line %d, skip\n", line);
-			while (file_addr[j] != '\n' && j < file_size)
+			while (j < file_size && file_addr[j] != '\n')
 				j++;
 			codesc_idx--;
 			line++;
@@ -2467,15 +2474,25 @@ parse_codefile(const char *filename)
 		}
 
 		/* Skip whitespace */
-		while (file_addr[j] == ' ' || file_addr[j] == '\t')
+		while (j < file_size && (file_addr[j] == ' ' || file_addr[j] == '\t'))
+		{
 			j++;
+		}
+
+		if (j >= file_size)
+		{
+			break;
+		}
 
 		/* Get around old file that had count at the beginning */
 		if (file_addr[j] == '\n')
 		{
 			/* missing debugid string - skip */
 			if (verbose_flag)
-				printf("Error: while parsing line %d, (0x%x) skip\n", line, codesc[codesc_idx].debugid);
+			{
+				printf("Error: while parsing line %d, (0x%x) skip\n", line,
+						codesc[codesc_idx].debugid);
+			}
 
 			j++;
 			codesc_idx--;
@@ -2483,12 +2500,25 @@ parse_codefile(const char *filename)
 			continue;
 		}
 
+		if (j >= file_size)
+		{
+			break;
+		}
+
 		/* Next is the debugid string terminated by a newline */
 		codesc[codesc_idx].debug_string = &file_addr[j];
 
 		/* Null out the newline terminator */
-		while ((j < file_size) && (file_addr[j] != '\n'))
+		while (j < file_size && file_addr[j] != '\n')
+		{
 			j++;
+		}
+
+		if (j >= file_size)
+		{
+			break;
+		}
+
 		file_addr[j] = '\0'; /* File must be read-write */
 		j++;
 		line++;
@@ -2703,8 +2733,8 @@ read_command_map(int fd, uint32_t count)
 
 		printf("Thread    Command\n");
 		for (i = 0; i < total_threads; i++) {
-			printf ("0x%lx    %s\n",
-				mapptr[i].thread,
+			printf ("0x%" PRIx64 "    %s\n",
+				(uint64_t)mapptr[i].thread,
 				mapptr[i].command);
 		}
 	}
@@ -2713,7 +2743,7 @@ read_command_map(int fd, uint32_t count)
 }
 
 void
-create_map_entry(uintptr_t thread, char *command)
+create_map_entry(uint64_t thread, char *command)
 {
 	threadmap_t	tme;
 	int		hashid;
@@ -2736,7 +2766,7 @@ create_map_entry(uintptr_t thread, char *command)
 }
 
 void
-delete_thread_entry(uintptr_t thread)
+delete_thread_entry(uint64_t thread)
 {
 	threadmap_t	tme = 0;
 	threadmap_t	tme_prev;
@@ -2766,7 +2796,7 @@ delete_thread_entry(uintptr_t thread)
 }
 
 void
-find_and_insert_tmp_map_entry(uintptr_t pthread, char *command)
+find_and_insert_tmp_map_entry(uint64_t pthread, char *command)
 {
 	threadmap_t	tme = 0;
 	threadmap_t	tme_prev;
@@ -2801,7 +2831,7 @@ find_and_insert_tmp_map_entry(uintptr_t pthread, char *command)
 }
 
 void
-create_tmp_map_entry(uintptr_t thread, uintptr_t pthread)
+create_tmp_map_entry(uint64_t thread, uint64_t pthread)
 {
 	threadmap_t	tme;
 
@@ -2821,7 +2851,7 @@ create_tmp_map_entry(uintptr_t thread, uintptr_t pthread)
 
 
 threadmap_t
-find_thread_entry(uintptr_t thread)
+find_thread_entry(uint64_t thread)
 {
 	threadmap_t	tme;
 	int	hashid;
@@ -2836,7 +2866,7 @@ find_thread_entry(uintptr_t thread)
 }
 
 void
-find_thread_name(uintptr_t thread, char **command, boolean_t deleteme)
+find_thread_name(uint64_t thread, char **command, boolean_t deleteme)
 {
 	threadmap_t	tme;
 
@@ -2852,7 +2882,7 @@ find_thread_name(uintptr_t thread, char **command, boolean_t deleteme)
 void
 find_thread_command(kd_buf *kbufp, char **command)
 {
-	uintptr_t	thread;
+	uint64_t	thread;
 	threadmap_t	tme;
 	int		debugid_base;
 

@@ -40,6 +40,7 @@
 #include <libutil.h>
 #include <errno.h>
 #include <err.h>
+#include <inttypes.h>
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -176,7 +177,7 @@ typedef struct event *event_t;
 struct event {
 	event_t	  ev_next;
 
-	uintptr_t ev_thread;
+	uint64_t ev_thread;
 	uint32_t  ev_type;
 	uint64_t  ev_timestamp;
 };
@@ -187,10 +188,10 @@ typedef struct lookup *lookup_t;
 struct lookup {
 	lookup_t  lk_next;
 
-	uintptr_t lk_thread;
-	uintptr_t lk_dvp;
-	long	 *lk_pathptr;
-	long	  lk_pathname[NUMPARMS + 1];
+	uint64_t lk_thread;
+	uint64_t lk_dvp;
+	int64_t	 *lk_pathptr;
+	int64_t	  lk_pathname[NUMPARMS + 1];
 };
 
 
@@ -199,8 +200,8 @@ typedef struct threadmap *threadmap_t;
 struct threadmap {
 	threadmap_t	tm_next;
 
-	uintptr_t	tm_thread;
-	uintptr_t	tm_pthread;
+	uint64_t	tm_thread;
+	uint64_t	tm_pthread;
 	char		tm_command[MAXCOMLEN + 1];
 	char		tm_orig_command[MAXCOMLEN + 1];
 };
@@ -211,7 +212,7 @@ typedef struct threadrun *threadrun_t;
 struct threadrun {
 	threadrun_t	tr_next;
 
-	uintptr_t	tr_thread;
+	uint64_t	tr_thread;
 	kd_buf		*tr_entry;
 	uint64_t	tr_timestamp;
 	int		tr_priority;
@@ -223,7 +224,7 @@ typedef struct thread_entry *thread_entry_t;
 struct thread_entry {
 	thread_entry_t	te_next;
 
-	uintptr_t	te_thread;
+	uint64_t	te_thread;
 };
 
 #define HASH_SIZE       1024
@@ -326,23 +327,23 @@ const char *sched_reasons[] = {
 static double handle_decrementer(kd_buf *, int);
 static kd_buf *log_decrementer(kd_buf *kd_beg, kd_buf *kd_end, kd_buf *end_of_sample, double i_latency);
 static void read_command_map(void);
-static void enter_syscall(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, int print_info);
-static void exit_syscall(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, int print_info);
-static void print_entry(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd_note);
+static void enter_syscall(FILE *fp, kd_buf *kd, uint64_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, int print_info);
+static void exit_syscall(FILE *fp, kd_buf *kd, uint64_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, int print_info);
+static void print_entry(FILE *fp, kd_buf *kd, uint64_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd_note);
 static void log_info(uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd, kd_buf *kd_note);
 static char *find_code(int);
-static void pc_to_string(char *pcstring, uintptr_t pc, int max_len, int mode);
+static void pc_to_string(char *pcstring, uint64_t pc, int max_len, int mode);
 static void getdivisor(void);
 static int sample_sc(void);
 static void init_code_file(void);
 static void do_kernel_nm(void);
 static void open_logfile(const char*);
-static int binary_search(kern_sym_t *list, int low, int high, uintptr_t addr);
+static int binary_search(kern_sym_t *list, int low, int high, uint64_t addr);
 
-static void create_map_entry(uintptr_t, char *);
-static void check_for_thread_update(uintptr_t thread, int debugid_base, kd_buf *kbufp, char **command);
-static void log_scheduler(kd_buf *kd_start, kd_buf *kd_stop, kd_buf *end_of_sample, int s_priority, double s_latency, uintptr_t thread);
-static int check_for_scheduler_latency(int type, uintptr_t *thread, uint64_t now, kd_buf *kd, kd_buf **kd_start, int *priority, double *latency);
+static void create_map_entry(uint64_t, char *);
+static void check_for_thread_update(uint64_t thread, int debugid_base, kd_buf *kbufp, char **command);
+static void log_scheduler(kd_buf *kd_start, kd_buf *kd_stop, kd_buf *end_of_sample, int s_priority, double s_latency, uint64_t thread);
+static int check_for_scheduler_latency(int type, uint64_t *thread, uint64_t now, kd_buf *kd, kd_buf **kd_start, int *priority, double *latency);
 static void open_rawfile(const char *path);
 
 static void screen_update(FILE *);
@@ -365,6 +366,8 @@ quit(char *s)
 			set_remove();
 		}
 	}
+	endwin();
+
 	printf("latency: ");
 	if (s) {
 		printf("%s", s);
@@ -905,6 +908,12 @@ exit_usage(void)
 	exit(1);
 }
 
+static void
+resetscr(void)
+{
+	(void)endwin();
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1029,9 +1038,10 @@ main(int argc, char *argv[])
 
 	if (!RAW_flag) {
 		if (initscr() == NULL) {
-			printf("Unrecognized TERM type, try vt100\n");
+			fprintf(stderr, "Unrecognized TERM type, try vt100\n");
 			exit(1);
 		}
+		atexit(resetscr);
 		clear();
 		refresh();
 
@@ -1219,7 +1229,7 @@ read_command_map(void)
 }
 
 void
-create_map_entry(uintptr_t thread, char *command)
+create_map_entry(uint64_t thread, char *command)
 {
 	threadmap_t tme;
 
@@ -1242,7 +1252,7 @@ create_map_entry(uintptr_t thread, char *command)
 }
 
 static void
-delete_thread_entry(uintptr_t thread)
+delete_thread_entry(uint64_t thread)
 {
 	threadmap_t tme;
 
@@ -1270,7 +1280,7 @@ delete_thread_entry(uintptr_t thread)
 }
 
 static void
-find_and_insert_tmp_map_entry(uintptr_t pthread, char *command)
+find_and_insert_tmp_map_entry(uint64_t pthread, char *command)
 {
 	threadmap_t tme;
 
@@ -1301,7 +1311,7 @@ find_and_insert_tmp_map_entry(uintptr_t pthread, char *command)
 }
 
 static void
-create_tmp_map_entry(uintptr_t thread, uintptr_t pthread)
+create_tmp_map_entry(uint64_t thread, uint64_t pthread)
 {
 	threadmap_t tme;
 
@@ -1321,7 +1331,7 @@ create_tmp_map_entry(uintptr_t thread, uintptr_t pthread)
 }
 
 static threadmap_t
-find_thread_entry(uintptr_t thread)
+find_thread_entry(uint64_t thread)
 {
 	threadmap_t tme;
 
@@ -1336,7 +1346,7 @@ find_thread_entry(uintptr_t thread)
 }
 
 static void
-find_thread_name(uintptr_t thread, char **command)
+find_thread_name(uint64_t thread, char **command)
 {
 	threadmap_t     tme;
 
@@ -1348,7 +1358,7 @@ find_thread_name(uintptr_t thread, char **command)
 }
 
 static void
-add_thread_entry_to_list(thread_entry_t *list, uintptr_t thread)
+add_thread_entry_to_list(thread_entry_t *list, uint64_t thread)
 {
 	thread_entry_t	te;
 
@@ -1364,7 +1374,7 @@ add_thread_entry_to_list(thread_entry_t *list, uintptr_t thread)
 }
 
 static void
-exec_thread_entry(uintptr_t thread, char *command)
+exec_thread_entry(uint64_t thread, char *command)
 {
 	threadmap_t	tme;
 
@@ -1383,7 +1393,7 @@ exec_thread_entry(uintptr_t thread, char *command)
 }
 
 static void
-record_thread_entry_for_gc(uintptr_t thread)
+record_thread_entry_for_gc(uint64_t thread)
 {
 	add_thread_entry_to_list(&thread_delete_list, thread);
 }
@@ -1468,7 +1478,7 @@ delete_all_thread_entries(void)
 }
 
 static void
-insert_run_event(uintptr_t thread, int priority, kd_buf *kd, uint64_t now)
+insert_run_event(uint64_t thread, int priority, kd_buf *kd, uint64_t now)
 {
 	threadrun_t	trp;
 
@@ -1499,7 +1509,7 @@ insert_run_event(uintptr_t thread, int priority, kd_buf *kd, uint64_t now)
 }
 
 static threadrun_t
-find_run_event(uintptr_t thread)
+find_run_event(uint64_t thread)
 {
 	threadrun_t trp;
 	int hashid = thread & HASH_MASK;
@@ -1513,7 +1523,7 @@ find_run_event(uintptr_t thread)
 }
 
 static void
-delete_run_event(uintptr_t thread)
+delete_run_event(uint64_t thread)
 {
 	threadrun_t	trp = 0;
 	threadrun_t trp_prev;
@@ -1571,7 +1581,7 @@ gc_run_events(void)
 
 
 static void
-insert_start_event(uintptr_t thread, int type, uint64_t now)
+insert_start_event(uint64_t thread, int type, uint64_t now)
 {
 	event_t evp;
 
@@ -1602,7 +1612,7 @@ insert_start_event(uintptr_t thread, int type, uint64_t now)
 
 
 static uint64_t
-consume_start_event(uintptr_t thread, int type, uint64_t now)
+consume_start_event(uint64_t thread, int type, uint64_t now)
 {
 	event_t evp;
 	event_t evp_prev;
@@ -1668,7 +1678,7 @@ gc_start_events(void)
 }
 
 static int
-thread_in_user_mode(uintptr_t thread, char *command)
+thread_in_user_mode(uint64_t thread, char *command)
 {
 	event_t evp;
 
@@ -1687,7 +1697,7 @@ thread_in_user_mode(uintptr_t thread, char *command)
 }
 
 static lookup_t
-handle_lookup_event(uintptr_t thread, int debugid, kd_buf *kdp)
+handle_lookup_event(uint64_t thread, int debugid, kd_buf *kdp)
 {
 	lookup_t lkp;
 	boolean_t first_record = FALSE;
@@ -1744,7 +1754,7 @@ handle_lookup_event(uintptr_t thread, int debugid, kd_buf *kdp)
 }
 
 static void
-delete_lookup_event(uintptr_t thread, lookup_t lkp_to_delete)
+delete_lookup_event(uint64_t thread, lookup_t lkp_to_delete)
 {
 	lookup_t	lkp;
 	lookup_t	lkp_prev;
@@ -1874,7 +1884,7 @@ sample_sc(void)
 
 	for (kd = (kd_buf *)my_buffer; kd < end_of_sample; kd++) {
 		kd_buf *kd_start;
-		uintptr_t thread = kd->arg5;
+		uint64_t thread = kd->arg5;
 		int	type = kd->debugid & DBG_FUNC_MASK;
 
 		(void)check_for_thread_update(thread, type, kd, NULL);
@@ -1914,7 +1924,7 @@ sample_sc(void)
 }
 
 void
-enter_syscall(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, int print_info)
+enter_syscall(FILE *fp, kd_buf *kd, uint64_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, int print_info)
 {
 	char	*p;
 	double	timestamp;
@@ -1939,19 +1949,19 @@ enter_syscall(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, u
 
 				pc_to_string(&pcstring[0], kd->arg2, 58, mode);
 
-				fprintf(fp, "%9.1f %8.1f\t\tINTERRUPT[%2lx] @ %-58.58s                       %8lx   %2d  %s\n",
-					timestamp, delta, kd->arg1, &pcstring[0], thread, cpunum, command);
+				fprintf(fp, "%9.1f %8.1f\t\tINTERRUPT[%2" PRIx64 "] @ %-58.58s                       %8" PRIx64 "   %2d  %s\n",
+					timestamp, delta, (uint64_t)kd->arg1, &pcstring[0], thread, cpunum, command);
 			} else if (type == MACH_vmfault) {
-				fprintf(fp, "%9.1f %8.1f\t\t%-28.28s                                                                     %8lx   %2d  %s\n",
+				fprintf(fp, "%9.1f %8.1f\t\t%-28.28s                                                                     %8" PRIx64 "   %2d  %s\n",
 					timestamp, delta, p, thread, cpunum, command);
 			} else {
-				fprintf(fp, "%9.1f %8.1f\t\t%-28.28s %-16lx %-16lx %-16lx %-16lx %8lx   %2d  %s\n",
-					timestamp, delta, p, kd->arg1, kd->arg2, kd->arg3, kd->arg4,
+				fprintf(fp, "%9.1f %8.1f\t\t%-28.28s %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %8" PRIx64 "   %2d  %s\n",
+					timestamp, delta, p, (uint64_t)kd->arg1, (uint64_t)kd->arg2, (uint64_t)kd->arg3, (uint64_t)kd->arg4,
 					thread, cpunum, command);
 			}
 		} else {
-			fprintf(fp, "%9.1f %8.1f\t\t%-8x                     %-16lx %-16lx %-16lx %-16lx %8lx   %2d  %s\n",
-				timestamp, delta, type, kd->arg1, kd->arg2, kd->arg3, kd->arg4,
+			fprintf(fp, "%9.1f %8.1f\t\t%-8x                     %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %8" PRIx64 "   %2d  %s\n",
+				timestamp, delta, type, (uint64_t)kd->arg1, (uint64_t)kd->arg2, (uint64_t)kd->arg3, (uint64_t)kd->arg4,
 				thread, cpunum, command);
 	       }
 	}
@@ -1961,7 +1971,7 @@ enter_syscall(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, u
 }
 
 void
-exit_syscall(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, int print_info)
+exit_syscall(FILE *fp, kd_buf *kd, uint64_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, int print_info)
 {
 	char   *p;
 	uint64_t user_addr;
@@ -1981,28 +1991,28 @@ exit_syscall(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, ui
 
 		if ((p = find_code(type))) {
 			if (type == INTERRUPT) {
-				fprintf(fp, "INTERRUPT                                                                                        %8lx   %2d  %s\n", thread, cpunum, command);
+				fprintf(fp, "INTERRUPT                                                                                        %8" PRIx64 "   %2d  %s\n", thread, cpunum, command);
 			} else if (type == MACH_vmfault && kd->arg4 <= DBG_PAGEIND_FAULT) {
 				user_addr = ((uint64_t)kd->arg1 << 32) | (uint32_t)kd->arg2;
 
-			    fprintf(fp, "%-28.28s %-10.10s   %-16qx                                       %8lx   %2d  %s\n",
+			    fprintf(fp, "%-28.28s %-10.10s   %-16qx                                       %8" PRIx64 "   %2d  %s\n",
 					p, fault_name[kd->arg4], user_addr,
 					thread, cpunum, command);
 		       } else {
-				fprintf(fp, "%-28.28s %-16lx %-16lx                                   %8lx   %2d  %s\n",
-					p, kd->arg1, kd->arg2,
+				fprintf(fp, "%-28.28s %-16" PRIx64 " %-16" PRIx64 "                                   %8" PRIx64 "   %2d  %s\n",
+					p, (uint64_t)kd->arg1, (uint64_t)kd->arg2,
 					thread, cpunum, command);
 		       }
 		} else {
-			fprintf(fp, "%-8x                     %-16lx %-16lx                                   %8lx   %2d  %s\n",
-				type, kd->arg1, kd->arg2,
+			fprintf(fp, "%-8x                     %-16" PRIx64 " %-16" PRIx64 "                                   %8" PRIx64 "   %2d  %s\n",
+				type, (uint64_t)kd->arg1, (uint64_t)kd->arg2,
 				thread, cpunum, command);
 		}
 	}
 }
 
 void
-print_entry(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd_note)
+print_entry(FILE *fp, kd_buf *kd, uint64_t thread, int type, char *command, uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd_note)
 {
 	char	*p;
 
@@ -2021,17 +2031,17 @@ print_entry(FILE *fp, kd_buf *kd, uintptr_t thread, int type, char *command, uin
 		} else {
 			fprintf(fp, "%9.1f %8.1f\t\t", timestamp, delta);
 		}
-		fprintf(fp, "%-28.28s %-16lx %-16lx %-16lx %-16lx %8lx   %2d  %s\n",
-			p, kd->arg1, kd->arg2, kd->arg3, kd->arg4, thread, cpunum, command);
+		fprintf(fp, "%-28.28s %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %8" PRIx64 "   %2d  %s\n",
+			p, (uint64_t)kd->arg1, (uint64_t)kd->arg2, (uint64_t)kd->arg3, (uint64_t)kd->arg4, thread, cpunum, command);
 	} else {
-		fprintf(fp, "%9.1f %8.1f\t\t%-8x                     %-16lx %-16lx %-16lx %-16lx %8lx   %2d  %s\n",
-			timestamp, delta, type, kd->arg1, kd->arg2, kd->arg3, kd->arg4,
+		fprintf(fp, "%9.1f %8.1f\t\t%-8x                     %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %-16" PRIx64 " %8" PRIx64 "   %2d  %s\n",
+			timestamp, delta, type, (uint64_t)kd->arg1, (uint64_t)kd->arg2, (uint64_t)kd->arg3, (uint64_t)kd->arg4,
 			thread, cpunum, command);
 	}
 }
 
 void
-check_for_thread_update(uintptr_t thread, int debugid_base, kd_buf *kbufp, char **command)
+check_for_thread_update(uint64_t thread, int debugid_base, kd_buf *kbufp, char **command)
 {
 	if (debugid_base == TRACE_DATA_NEWTHREAD) {
 		/*
@@ -2060,7 +2070,7 @@ log_info(uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd, kd_buf 
 {
 	lookup_t	lkp;
 	int		mode;
-	uintptr_t	reason;
+	uint64_t	reason;
 	char		*p;
 	char		*command;
 	char		*command1;
@@ -2073,7 +2083,7 @@ log_info(uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd, kd_buf 
 	double		delta;
 	char joe[32];
 
-	uintptr_t thread  = kd->arg5;
+	uint64_t thread  = kd->arg5;
 	int cpunum	= CPU_NUMBER(kd);
 	int debugid = kd->debugid;
 	int type    = kd->debugid & DBG_FUNC_MASK;
@@ -2093,28 +2103,28 @@ log_info(uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd, kd_buf 
 		case CQ_action:
 			pc_to_string(&pcstring[0], kd->arg1, 84, KERNEL_MODE);
 
-			fprintf(log_fp, "%9.1f %8.1f\t\tCQ_action @ %-84.84s %8lx   %2d  %s\n",
+			fprintf(log_fp, "%9.1f %8.1f\t\tCQ_action @ %-84.84s %8" PRIx64 "   %2d  %s\n",
 				timestamp, delta, &pcstring[0], thread, cpunum, command);
 			break;
 
 		case TES_action:
 			pc_to_string(&pcstring[0], kd->arg1, 83, KERNEL_MODE);
 
-			fprintf(log_fp, "%9.1f %8.1f\t\tTES_action @ %-83.83s %8lx   %2d  %s\n",
+			fprintf(log_fp, "%9.1f %8.1f\t\tTES_action @ %-83.83s %8" PRIx64 "   %2d  %s\n",
 				timestamp, delta, &pcstring[0], thread, cpunum, command);
 			break;
 
 		case IES_action:
 			pc_to_string(&pcstring[0], kd->arg1, 83, KERNEL_MODE);
 
-			fprintf(log_fp, "%9.1f %8.1f\t\tIES_action @ %-83.83s %8lx   %2d  %s\n",
+			fprintf(log_fp, "%9.1f %8.1f\t\tIES_action @ %-83.83s %8" PRIx64 "   %2d  %s\n",
 				timestamp, delta, &pcstring[0], thread, cpunum, command);
 			break;
 
 		case IES_filter:
 			pc_to_string(&pcstring[0], kd->arg1, 83, KERNEL_MODE);
 
-			fprintf(log_fp, "%9.1f %8.1f\t\tIES_filter @ %-83.83s %8lx   %2d  %s\n",
+			fprintf(log_fp, "%9.1f %8.1f\t\tIES_filter @ %-83.83s %8" PRIx64 "   %2d  %s\n",
 				timestamp, delta, &pcstring[0], thread, cpunum, command);
 			break;
 
@@ -2139,12 +2149,12 @@ log_info(uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd, kd_buf 
 
 			pc_to_string(&pcstring[0], kd->arg2, 84, mode);
 
-			fprintf(log_fp, "%9.1f %8.1f[%.1f]%s\tDECR_TRAP @ %-84.84s %8lx   %2d  %s\n",
+			fprintf(log_fp, "%9.1f %8.1f[%.1f]%s\tDECR_TRAP @ %-84.84s %8" PRIx64 "   %2d  %s\n",
 					timestamp, delta, i_latency, p, &pcstring[0], thread, cpunum, command);
 			break;
 
 		case DECR_SET:
-			fprintf(log_fp, "%9.1f %8.1f[%.1f]  \t%-28.28s                                                                     %8lx   %2d  %s\n",
+			fprintf(log_fp, "%9.1f %8.1f[%.1f]  \t%-28.28s                                                                     %8" PRIx64 "   %2d  %s\n",
 					timestamp, delta, (double)kd->arg1/divisor, "DECR_SET", thread, cpunum, command);
 			break;
 
@@ -2155,7 +2165,7 @@ log_info(uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd, kd_buf 
 
 			if (command1 == EMPTYSTRING) {
 				command1 = command_buf;
-				sprintf(command1, "%-8lx", kd->arg2);
+				sprintf(command1, "%-8" PRIx64, (uint64_t)kd->arg2);
 			}
 			if (thread_in_user_mode(kd->arg2, command1)) {
 				p = "U";
@@ -2172,12 +2182,12 @@ log_info(uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd, kd_buf 
 			}
 
 			if (sched_reason[0] == '?') {
-				sprintf(joe, "%lx", reason);
+				sprintf(joe, "%" PRIx64, reason);
 				sched_reason = joe;
 			}
-			sprintf(sched_info, "%16.16s @ pri %3lu  -->  %16.16s @ pri %3lu%s", command, kd->arg3, command1, kd->arg4, p);
+			sprintf(sched_info, "%16.16s @ pri %3" PRIu64 "  -->  %16.16s @ pri %3" PRIu64 "%s", command, (uint64_t)kd->arg3, command1, (uint64_t)kd->arg4, p);
 
-			fprintf(log_fp, "%9.1f %8.1f\t\t%-10.10s[%s]     %s                   %8lx   %2d\n",
+			fprintf(log_fp, "%9.1f %8.1f\t\t%-10.10s[%s]     %s                   %8" PRIx64 "   %2d\n",
 				timestamp, delta, "MACH_SCHED", sched_reason, sched_info, thread, cpunum);
 			break;
 
@@ -2195,7 +2205,7 @@ log_info(uint64_t now, uint64_t idelta, uint64_t start_bias, kd_buf *kd, kd_buf 
 					clen = 0;
 				}
 
-				fprintf(log_fp, "%9.1f %8.1f\t\t%-14.14s %-59s    %-16lx   %8lx   %2d  %s\n",
+				fprintf(log_fp, "%9.1f %8.1f\t\t%-14.14s %-59s    %-16" PRIx64 "   %8" PRIx64 "   %2d  %s\n",
 					timestamp, delta, "VFS_LOOKUP",
 					&p[clen], lkp->lk_dvp, thread, cpunum, command);
 
@@ -2250,7 +2260,7 @@ log_range(kd_buf *kd_buffer, kd_buf *kd_start, kd_buf *kd_stop, kd_buf *kd_note,
 			last_timestamp = now;
 		} else {
 			int	debugid = kd->debugid;
-			uintptr_t	thread = kd->arg5;
+			uint64_t	thread = kd->arg5;
 			int	type = kd->debugid & DBG_FUNC_MASK;
 
 			if ((type >> 24) == DBG_TRACE) {
@@ -2282,7 +2292,7 @@ log_decrementer(kd_buf *kd_beg, kd_buf *kd_end, kd_buf *end_of_sample, double i_
 	double sample_timestamp;
 	char buf1[128];
 
-	uintptr_t thread = kd_beg->arg5;
+	uint64_t thread = kd_beg->arg5;
 	int cpunum = CPU_NUMBER(kd_end);
 
 	for (kd_count = 0, kd_start = kd_beg - 1; (kd_start >= (kd_buf *)my_buffer); kd_start--, kd_count++) {
@@ -2347,7 +2357,7 @@ log_decrementer(kd_buf *kd_beg, kd_buf *kd_end, kd_buf *end_of_sample, double i_
 
 
 void
-log_scheduler(kd_buf *kd_beg, kd_buf *kd_end, kd_buf *end_of_sample, int s_priority, double s_latency, uintptr_t thread)
+log_scheduler(kd_buf *kd_beg, kd_buf *kd_end, kd_buf *end_of_sample, int s_priority, double s_latency, uint64_t thread)
 {
 	kd_buf *kd_start, *kd_stop;
 	uint64_t now;
@@ -2399,7 +2409,7 @@ log_scheduler(kd_buf *kd_beg, kd_buf *kd_end, kd_buf *end_of_sample, int s_prior
 }
 
 int
-check_for_scheduler_latency(int type, uintptr_t *thread, uint64_t now, kd_buf *kd, kd_buf **kd_start, int *priority, double *latency)
+check_for_scheduler_latency(int type, uint64_t *thread, uint64_t now, kd_buf *kd, kd_buf **kd_start, int *priority, double *latency)
 {
 	int found_latency = 0;
 
@@ -2583,7 +2593,7 @@ do_kernel_nm(void)
 	/*
 	 * Build the nm command and create a tmp file with the output
 	 */
-	sprintf (tmpstr, "/usr/bin/nm -f -n -s __TEXT __text %s > %s",
+	sprintf (tmpstr, "/usr/bin/nm -n %s -s __TEXT __text > %s",
 		 kernelpath, tmp_nm_file);
 	system(tmpstr);
 
@@ -2679,19 +2689,19 @@ do_kernel_nm(void)
 }
 
 void
-pc_to_string(char *pcstring, uintptr_t pc, int max_len, int mode)
+pc_to_string(char *pcstring, uint64_t pc, int max_len, int mode)
 {
 	int ret;
 	size_t len;
 
 	if (mode == USER_MODE) {
-		sprintf(pcstring, "%-16lx [usermode addr]", pc);
+		sprintf(pcstring, "%-16" PRIx64 " [usermode addr]", pc);
 		return;
 	}
 	ret = binary_search(kern_sym_tbl, 0, kern_sym_count-1, pc);
 
 	if (ret == -1 || kern_sym_tbl[ret].k_sym_name == NULL) {
-		sprintf(pcstring, "%-16lx", pc);
+		sprintf(pcstring, "%-16" PRIx64, pc);
 		return;
 	}
 	if ((len = kern_sym_tbl[ret].k_sym_len) > (max_len - 8)) {
@@ -2700,7 +2710,7 @@ pc_to_string(char *pcstring, uintptr_t pc, int max_len, int mode)
 
 	memcpy(pcstring, kern_sym_tbl[ret].k_sym_name, len);
 
-	sprintf(&pcstring[len], "+0x%-5lx", pc - (uintptr_t)kern_sym_tbl[ret].k_sym_addr);
+	sprintf(&pcstring[len], "+0x%-5" PRIx64, pc - (uint64_t)kern_sym_tbl[ret].k_sym_addr);
 }
 
 
@@ -2708,7 +2718,7 @@ pc_to_string(char *pcstring, uintptr_t pc, int max_len, int mode)
  * Return -1 if not found, else return index
  */
 int
-binary_search(kern_sym_t *list, int low, int high, uintptr_t addr)
+binary_search(kern_sym_t *list, int low, int high, uint64_t addr)
 {
 	int mid;
 
@@ -2721,13 +2731,13 @@ binary_search(kern_sym_t *list, int low, int high, uintptr_t addr)
 	}
 
 	if (low + 1 == high) {
-		if ((uintptr_t)list[low].k_sym_addr <= addr && addr < (uintptr_t)list[high].k_sym_addr) {
+		if ((uint64_t)list[low].k_sym_addr <= addr && addr < (uint64_t)list[high].k_sym_addr) {
 			/*
 			 * We have a range match
 			 */
 			return low;
 		}
-		if ((uintptr_t)list[high].k_sym_addr <= addr) {
+		if ((uint64_t)list[high].k_sym_addr <= addr) {
 			return high;
 		}
 		/*
@@ -2737,7 +2747,7 @@ binary_search(kern_sym_t *list, int low, int high, uintptr_t addr)
 	}
 	mid = (low + high) / 2;
 
-	if (addr < (uintptr_t)list[mid].k_sym_addr) {
+	if (addr < (uint64_t)list[mid].k_sym_addr) {
 		return binary_search(list, low, mid, addr);
 	}
 

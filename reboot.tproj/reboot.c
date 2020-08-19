@@ -61,10 +61,9 @@ __unused static const char rcsid[] =
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
-#if !TARGET_OS_EMBEDDED
-// Darling doesn't have any kernel extensions
-//#include "KextManager.h"
-//#include <IOKit/kext/kextmanager_types.h>
+#if !(TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)
+#include "kextmanager.h"
+#include <IOKit/kext/kextmanager_types.h>
 #endif
 #include <mach/mach_port.h>		// allocate
 #include <mach/mach.h>			// task_self, etc
@@ -77,7 +76,7 @@ __unused static const char rcsid[] =
 
 void usage(void);
 u_int get_pageins(void);
-#if defined(__APPLE__) && !TARGET_OS_EMBEDDED
+#if defined(__APPLE__) && !(TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)
 int reserve_reboot(void);
 #endif
 
@@ -155,7 +154,7 @@ main(int argc, char *argv[])
 		err(1, NULL);
 	}
 
-#if defined(__APPLE__) && !TARGET_OS_EMBEDDED
+#if defined(__APPLE__) && !(TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)
 	if (!qflag && !lflag) {	// shutdown(8) has already checked w/kextd
 		if ((errno = reserve_reboot()))
 			err(1, "couldn't lock for reboot");
@@ -201,9 +200,6 @@ main(int argc, char *argv[])
 		utx.ut_type = SHUTDOWN_TIME;
 		gettimeofday(&utx.ut_tv, NULL);
 		pututxline(&utx);
-
-		int newvalue = 1;
-		sysctlbyname("kern.willshutdown", NULL, NULL, &newvalue, sizeof(newvalue));
 	}
 #else
 	logwtmp("~", "shutdown", "");
@@ -305,7 +301,7 @@ get_pageins(void)
 	return pageins;
 }
 
-#if defined(__APPLE__) && !TARGET_OS_EMBEDDED
+#if defined(__APPLE__) && !(TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)
 // XX this routine is also in shutdown.tproj; it would be nice to share
 
 #define WAITFORLOCK 1
@@ -315,7 +311,6 @@ get_pageins(void)
 int
 reserve_reboot(void)
 {
-	/*
 	int rval = ELAST + 1;
 	kern_return_t macherr = KERN_FAILURE;
 	mach_port_t kxport, tport = MACH_PORT_NULL, myport = MACH_PORT_NULL;
@@ -363,7 +358,5 @@ finish:
 		mach_port_mod_refs(tport, myport, MACH_PORT_RIGHT_RECEIVE, -1);
 
 	return rval;
-	*/
-	return 0;
 }
 #endif

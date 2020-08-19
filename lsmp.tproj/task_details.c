@@ -43,7 +43,7 @@ static uint32_t k2n_hash(natural_t kobject) {
     return (uint64_t)kobject * 2654435761 >> 32;
 }
 
-struct k2n_table_node *k2n_table_lookup_next(struct k2n_table_node *node, natural_t kobject) {
+static struct k2n_table_node *k2n_table_lookup_next_internal(struct k2n_table_node *node, natural_t kobject) {
     while (node) {
         if (kobject == node->kobject)
             return node;
@@ -54,6 +54,13 @@ struct k2n_table_node *k2n_table_lookup_next(struct k2n_table_node *node, natura
     return NULL;
 }
 
+struct k2n_table_node *k2n_table_lookup_next(struct k2n_table_node *node, natural_t kobject) {
+    if (!node) {
+        return NULL;
+    }
+    return k2n_table_lookup_next_internal(node->next, kobject);
+}
+
 struct k2n_table_node *k2n_table_lookup(struct k2n_table_node **table, natural_t kobject) {
     uint32_t hv;
     struct k2n_table_node *node;
@@ -62,7 +69,7 @@ struct k2n_table_node *k2n_table_lookup(struct k2n_table_node **table, natural_t
 
     node = table[hv & K2N_TABLE_MASK];
 
-    return k2n_table_lookup_next(node, kobject);
+    return k2n_table_lookup_next_internal(node, kobject);
 }
 
 static void k2n_table_enter(struct k2n_table_node **table, natural_t kobject, ipc_info_name_t *info_name) {
@@ -76,6 +83,7 @@ static void k2n_table_enter(struct k2n_table_node **table, natural_t kobject, ip
 
     node->kobject = kobject;
     node->info_name = info_name;
+    assert(kobject == info_name->iin_object);
 
     node->next = table[hv & K2N_TABLE_MASK];
     table[hv & K2N_TABLE_MASK] = node;
@@ -191,7 +199,7 @@ kern_return_t collect_per_task_info(my_per_task_info_t *taskinfo, task_t target_
             }
 
             if (KERN_SUCCESS == thread_get_mach_voucher(threadPorts[i], 0, &th_voucher) && th_voucher != IPC_VOUCHER_NULL) {
-                char *detail = copy_voucher_detail(mach_task_self(), th_voucher);
+                char *detail = copy_voucher_detail(mach_task_self(), th_voucher, NULL);
                 taskinfo->threadInfos[i].voucher_detail = strndup(detail, VOUCHER_DETAIL_MAXLEN);
                 free(detail);
 
@@ -242,19 +250,19 @@ void get_exc_behavior_string(exception_behavior_t b, char *out_string, size_t le
     out_string[0]='\0';
 
     if (b & MACH_EXCEPTION_CODES)
-        strncat(out_string, "MACH +", len);
+        strlcat(out_string, "MACH +", len);
     switch (b & ~MACH_EXCEPTION_CODES) {
         case EXCEPTION_DEFAULT:
-            strncat(out_string, " DEFAULT", len);
+            strlcat(out_string, " DEFAULT", len);
             break;
         case EXCEPTION_STATE:
-            strncat(out_string, " STATE", len);
+            strlcat(out_string, " STATE", len);
             break;
         case EXCEPTION_STATE_IDENTITY:
-            strncat(out_string, " IDENTITY", len);
+            strlcat(out_string, " IDENTITY", len);
             break;
         default:
-            strncat(out_string, " UNKNOWN", len);
+            strlcat(out_string, " UNKNOWN", len);
     }
 }
 
@@ -263,36 +271,39 @@ void get_exc_mask_string(exception_mask_t m, char *out_string, size_t len)
     out_string[0]='\0';
 
     if (m & (1<<EXC_BAD_ACCESS))
-        strncat(out_string, " BAD_ACCESS", len);
+        strlcat(out_string, " BAD_ACCESS", len);
     if (m & (1<<EXC_BAD_INSTRUCTION))
-        strncat(out_string," BAD_INSTRUCTION", len);
+        strlcat(out_string," BAD_INSTRUCTION", len);
     if (m & (1<<EXC_ARITHMETIC))
-        strncat(out_string," ARITHMETIC", len);
+        strlcat(out_string," ARITHMETIC", len);
     if (m & (1<<EXC_EMULATION))
-        strncat(out_string," EMULATION", len);
+        strlcat(out_string," EMULATION", len);
     if (m & (1<<EXC_SOFTWARE))
-        strncat(out_string," SOFTWARE", len);
+        strlcat(out_string," SOFTWARE", len);
     if (m & (1<<EXC_BREAKPOINT))
-        strncat(out_string," BREAKPOINT", len);
+        strlcat(out_string," BREAKPOINT", len);
     if (m & (1<<EXC_SYSCALL))
-        strncat(out_string," SYSCALL", len);
+        strlcat(out_string," SYSCALL", len);
     if (m & (1<<EXC_MACH_SYSCALL))
-        strncat(out_string," MACH_SYSCALL", len);
+        strlcat(out_string," MACH_SYSCALL", len);
     if (m & (1<<EXC_RPC_ALERT))
-        strncat(out_string," RPC_ALERT", len);
+        strlcat(out_string," RPC_ALERT", len);
     if (m & (1<<EXC_CRASH))
-        strncat(out_string," CRASH", len);
+        strlcat(out_string," CRASH", len);
     if (m & (1<<EXC_RESOURCE))
-        strncat(out_string," RESOURCE", len);
+        strlcat(out_string," RESOURCE", len);
     if (m & (1<<EXC_GUARD))
-        strncat(out_string," GUARD", len);
+        strlcat(out_string," GUARD", len);
 }
 
-kern_return_t print_task_exception_info(my_per_task_info_t *taskinfo)
+kern_return_t print_task_exception_info(my_per_task_info_t *taskinfo, JSON_t json)
 {
 
     char behavior_string[30];
     char mask_string[200];
+
+    JSON_KEY(json, exception_ports);
+    JSON_ARRAY_BEGIN(json);
 
     boolean_t header_required = TRUE;
     for (int i = 0; i < taskinfo->exceptionInfo.count; i++) {
@@ -303,17 +314,27 @@ kern_return_t print_task_exception_info(my_per_task_info_t *taskinfo)
                 header_required = FALSE;
             }
             get_exc_behavior_string(taskinfo->exceptionInfo.behaviors[i], behavior_string, sizeof(behavior_string));
-            get_exc_mask_string(taskinfo->exceptionInfo.masks[i], mask_string, 200);
+            get_exc_mask_string(taskinfo->exceptionInfo.masks[i], mask_string, sizeof(mask_string));
+
+            JSON_OBJECT_BEGIN(json);
+            JSON_OBJECT_SET(json, port, "0x%08x", taskinfo->exceptionInfo.ports[i]);
+            JSON_OBJECT_SET(json, flavor, "0x%03x", taskinfo->exceptionInfo.flavors[i]);
+            JSON_OBJECT_SET(json, behavior, "%s", behavior_string);
+            JSON_OBJECT_SET(json, mask, "%s", mask_string);
+            JSON_OBJECT_END(json); // exception port
+
             printf("    0x%08x  0x%03x  <%s>           %s  \n" , taskinfo->exceptionInfo.ports[i], taskinfo->exceptionInfo.flavors[i], behavior_string, mask_string);
         }
 
     }
 
+    JSON_ARRAY_END(json); // exception ports
+
     return KERN_SUCCESS;
 }
 
 
-kern_return_t print_task_threads_special_ports(my_per_task_info_t *taskinfo)
+kern_return_t print_task_threads_special_ports(my_per_task_info_t *taskinfo, JSON_t json)
 {
     kern_return_t kret = KERN_SUCCESS;
     mach_msg_type_number_t threadcount = taskinfo->threadCount;
@@ -321,7 +342,12 @@ kern_return_t print_task_threads_special_ports(my_per_task_info_t *taskinfo)
     boolean_t newline_required = TRUE;
     struct my_per_thread_info * info = NULL;
 
+    JSON_KEY(json, threads);
+    JSON_ARRAY_BEGIN(json);
+
     for (int i = 0; i < threadcount; i++) {
+        JSON_OBJECT_BEGIN(json);
+
         info = &taskinfo->threadInfos[i];
         if (header_required) {
             printf("Thread_KObject  Thread-ID     Port Description.");
@@ -337,11 +363,18 @@ kern_return_t print_task_threads_special_ports(my_per_task_info_t *taskinfo)
             /* TODO: Should print tid and stuff */
             printf("0x%08x       ", info->th_kobject);
             printf("0x%llx  ", info->th_id);
+
+            JSON_OBJECT_SET(json, kobject, "0x%08x", info->th_kobject);
+            JSON_OBJECT_SET(json, tid, "0x%llx", info->th_id);
         }
 
         if (info->voucher_detail != NULL) {
+            /* TODO: include voucher detail in JSON */
             printf("%s\n", info->voucher_detail);
         }
+
+        JSON_KEY(json, exception_ports);
+        JSON_ARRAY_BEGIN(json);
 
         /* print the thread exception ports also */
         if (taskinfo->threadExceptionInfos != NULL)
@@ -354,6 +387,8 @@ kern_return_t print_task_threads_special_ports(my_per_task_info_t *taskinfo)
             if (excinfo->count > 0) {
                 boolean_t header_required = TRUE;
                 for (int i = 0; i < excinfo->count; i++) {
+                    JSON_OBJECT_BEGIN(json);
+
                     if (excinfo->ports[i] != MACH_PORT_NULL) {
                         if (header_required) {
                             printf("\n    exc_port    flavor <behaviors>           mask   -> name    owner\n");
@@ -361,6 +396,12 @@ kern_return_t print_task_threads_special_ports(my_per_task_info_t *taskinfo)
                         }
                         get_exc_behavior_string(excinfo->behaviors[i], behavior_string, sizeof(behavior_string));
                         get_exc_mask_string(excinfo->masks[i], mask_string, sizeof(mask_string));
+
+                        JSON_OBJECT_SET(json, port, "0x%08x", excinfo->ports[i]);
+                        JSON_OBJECT_SET(json, flavor, "0x%03x", excinfo->flavors[i]);
+                        JSON_OBJECT_SET(json, behavior, "%s", behavior_string);
+                        JSON_OBJECT_SET(json, mask, "%s", mask_string);
+
                         printf("    0x%08x  0x%03x  <%s>           %s  " , excinfo->ports[i], excinfo->flavors[i], behavior_string, mask_string);
 
                         ipc_info_name_t actual_sendinfo;
@@ -368,6 +409,12 @@ kern_return_t print_task_threads_special_ports(my_per_task_info_t *taskinfo)
                             my_per_task_info_t *recv_holder_taskinfo;
                             mach_port_name_t recv_name = MACH_PORT_NULL;
                             if (KERN_SUCCESS == get_taskinfo_of_receiver_by_send_right(&actual_sendinfo, &recv_holder_taskinfo, &recv_name)) {
+
+                                JSON_OBJECT_SET(json, name, "0x%08x", recv_name);
+                                JSON_OBJECT_SET(json, ipc-object, "0x%08x", actual_sendinfo.iin_object);
+                                JSON_OBJECT_SET(json, pid, %d, recv_holder_taskinfo->pid);
+                                JSON_OBJECT_SET(json, process, "%s", recv_holder_taskinfo->processName);
+
                                 printf("   -> 0x%08x  0x%08x  (%d) %s\n",
                                        recv_name,
                                        actual_sendinfo.iin_object,
@@ -382,13 +429,15 @@ kern_return_t print_task_threads_special_ports(my_per_task_info_t *taskinfo)
                         printf("\n");
 
                     }
-
+                    JSON_OBJECT_END(json); // exception port
                 }
             }
-
         }
-
+        JSON_ARRAY_END(json); // exception ports
+        JSON_OBJECT_END(json); // thread
     }
+
+    JSON_ARRAY_END(json); // threads
     printf("\n");
     return kret;
 }

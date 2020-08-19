@@ -90,22 +90,21 @@
 #define	PRINTK(fmt, value)	\
 	printf(fmt "K", (value) / 1024 )	/* ick */
 
-static void usage(void);
-static void printzone(mach_zone_name_t *, task_zone_info_t *);
-static void colprintzone(mach_zone_name_t *, task_zone_info_t *);
-static int  find_deltas(mach_zone_name_t *, task_zone_info_t *, task_zone_info_t *, char *, int, int);
+static void usage(FILE *stream);
+static void printzone(mach_zone_name_t *, mach_zone_info_t *);
+static void colprintzone(mach_zone_name_t *, mach_zone_info_t *);
+static int  find_deltas(mach_zone_name_t *, mach_zone_info_t *, mach_zone_info_t *, char *, int, int);
 static void colprintzoneheader(void);
 static boolean_t substr(const char *a, size_t alen, const char *b, size_t blen);
 
-static int  SortName(const void * left, const void * right);
-static int  SortSize(const void * left, const void * right);
-static void PrintLarge(mach_memory_info_t *wiredInfo, unsigned int wiredInfoCnt, int (*func)(const void *, const void *), boolean_t column);
+static int  SortName(void * thunk, const void * left, const void * right);
+static int  SortSize(void * thunk, const void * left, const void * right);
+static void PrintLarge(mach_memory_info_t *wiredInfo, unsigned int wiredInfoCnt,
+			mach_zone_info_t *zoneInfo, mach_zone_name_t *zoneNames,
+			unsigned int zoneCnt, uint64_t zoneElements,
+			int (*func)(void *, const void *, const void *), boolean_t column);
 
 static char *program;
-
-static pid_t pid = 0;
-static task_t task = TASK_NULL;
-static boolean_t ShowPid = FALSE;
 
 static boolean_t ShowDeltas = FALSE;
 static boolean_t ShowWasted = FALSE;
@@ -118,12 +117,62 @@ static boolean_t PrintHeader = TRUE;
 static unsigned long long totalsize = 0;
 static unsigned long long totalused = 0;
 static unsigned long long totalsum = 0;
-static unsigned long long pidsum = 0;
+static unsigned long long totalfragmented = 0;
+static unsigned long long totalcollectable = 0;
 
 static int last_time = 0;
 
 static	char	*zname = NULL;
 static	size_t	znamelen = 0;
+
+#define LEFTALIGN -1
+#define RIGHTALIGN 1
+
+typedef struct {
+	char *line1;
+	char *line2;
+	int colwidth;
+	int alignment;
+	bool visible;
+} column_format;
+
+enum {
+	COL_ZONE_NAME,
+	COL_ELEM_SIZE,
+	COL_CUR_SIZE,
+	COL_MAX_SIZE,
+	COL_CUR_ELTS,
+	COL_MAX_ELTS,
+	COL_CUR_INUSE,
+	COL_ALLOC_SIZE,
+	COL_ALLOC_COUNT,
+	COL_ZONE_FLAGS,
+	COL_FRAG_SIZE,
+	COL_FREE_SIZE,
+	COL_TOTAL_ALLOCS,
+	COL_MAX
+};
+
+/*
+ * The order in which the columns appear below should match
+ * the order in which the values are printed in colprintzone().
+ */
+static column_format columns[] = {
+		[COL_ZONE_NAME]		= { "", "zone name", 25, LEFTALIGN, true },
+		[COL_ELEM_SIZE]		= { "elem", "size", 6, RIGHTALIGN, true },
+		[COL_CUR_SIZE]		= { "cur", "size", 11, RIGHTALIGN, true },
+		[COL_MAX_SIZE]		= { "max", "size", 11, RIGHTALIGN, true },
+		[COL_CUR_ELTS]		= { "cur", "#elts", 10, RIGHTALIGN, true },
+		[COL_MAX_ELTS]		= { "max", "#elts", 11, RIGHTALIGN, true },
+		[COL_CUR_INUSE]		= { "cur", "inuse", 11, RIGHTALIGN, true },
+		[COL_ALLOC_SIZE]	= { "alloc", "size", 6, RIGHTALIGN, true },
+		[COL_ALLOC_COUNT]	= { "alloc", "count", 6, RIGHTALIGN, true },
+		[COL_ZONE_FLAGS]	= { "", "", 2, RIGHTALIGN, true },
+		/* additional columns for special flags, not visible by default */
+		[COL_FRAG_SIZE]		= { "frag", "size", 9, RIGHTALIGN, false },
+		[COL_FREE_SIZE]		= { "free", "size", 9, RIGHTALIGN, false },
+		[COL_TOTAL_ALLOCS]	= { "total", "allocs", 17, RIGHTALIGN, false }
+};
 
 static void
 sigintr(__unused int signum)
@@ -132,10 +181,20 @@ sigintr(__unused int signum)
 }
 
 static void
-usage(void)
+usage(FILE *stream)
 {
-	fprintf(stderr, "usage: %s [-w] [-s] [-c] [-h] [-t] [-d] [-l] [-L] [-p <pid>] [name]\n", program);
-	exit(1);
+	fprintf(stream, "usage: %s [-w] [-s] [-c] [-h] [-H] [-t] [-d] [-l] [-L] [name]\n\n", program);
+	fprintf(stream, "\t-w\tshow wasted memory for each zone\n");
+	fprintf(stream, "\t-s\tsort zones by wasted memory\n");
+	fprintf(stream, "\t-c\t(default) display output formatted in columns\n");
+	fprintf(stream, "\t-h\tdisplay this help message\n");
+	fprintf(stream, "\t-H\thide column names\n");
+	fprintf(stream, "\t-t\tdisplay the total size of allocations over the life of the zone\n");
+	fprintf(stream, "\t-d\tdisplay deltas over time\n");
+	fprintf(stream, "\t-l\t(default) display wired memory info after zone info\n");
+	fprintf(stream, "\t-L\tdo not show wired memory info, only show zone info\n");
+	fprintf(stream, "\nAny option (including default options) can be overridden by specifying the option in upper-case.\n\n");
+	exit(stream != stdout);
 }
 
 int
@@ -143,17 +202,18 @@ main(int argc, char **argv)
 {
 	mach_zone_name_t *name = NULL;
 	unsigned int nameCnt = 0;
-	task_zone_info_t *info = NULL;
+	mach_zone_info_t *info = NULL;
 	unsigned int infoCnt = 0;
 	mach_memory_info_t *wiredInfo = NULL;
 	unsigned int wiredInfoCnt = 0;
-	task_zone_info_t *max_info = NULL;
+	mach_zone_info_t *max_info = NULL;
 	char		*deltas = NULL;
+	uint64_t        zoneElements;
 
 	kern_return_t	kr;
 	int		i, j;
 	int		first_time = 1;
-	int             must_print = 1;
+	int 	must_print = 1;
 	int		interval = 1;
 
 	signal(SIGINT, sigintr);
@@ -187,20 +247,15 @@ main(int argc, char **argv)
 			ColFormat = TRUE;
 		else if (streql(argv[i], "-C"))
 			ColFormat = FALSE;
+		else if (streql(argv[i], "-h"))
+			usage(stdout);
 		else if (streql(argv[i], "-H"))
 			PrintHeader = FALSE;
-		else if (streql(argv[i], "-p")) {
-			ShowPid = TRUE;
-			if (i < argc - 1) {
-				pid = atoi(argv[i+1]);
-				i++;
-			} else
-				usage();
-		} else if (streql(argv[i], "--")) {
+		else if (streql(argv[i], "--")) {
 			i++;
 			break;
 		} else if (argv[i][0] == '-')
-			usage();
+			usage(stderr);
 		else
 			break;
 	}
@@ -217,7 +272,7 @@ main(int argc, char **argv)
 		break;
 
 	    default:
-		usage();
+		usage(stderr);
 	}
 
 	if (ShowDeltas) {
@@ -226,163 +281,139 @@ main(int argc, char **argv)
 		PrintHeader = TRUE;
 	}
 
-	if (ShowPid) {
-		kr = task_for_pid(mach_task_self(), pid, &task);
+	if (ShowWasted) {
+		columns[COL_FRAG_SIZE].visible = true;
+		columns[COL_FREE_SIZE].visible = true;
+	}
+	if (ShowTotal) {
+		columns[COL_TOTAL_ALLOCS].visible = true;
+	}
+
+	for (;;) {
+		kr = mach_memory_info(mach_host_self(),
+				&name, &nameCnt, &info, &infoCnt,
+				&wiredInfo, &wiredInfoCnt);
 		if (kr != KERN_SUCCESS) {
-			fprintf(stderr, "%s: task_for_pid(%d) failed: %s (try running as root)\n",
-				program, pid, mach_error_string(kr));
+			fprintf(stderr, "%s: mach_memory_info: %s (try running as root)\n",
+					program, mach_error_string(kr));
 			exit(1);
 		}
-	}
 
-    for (;;) {
-        if (ShowPid) {
-	    kr = task_zone_info(task, &name, &nameCnt, &info, &infoCnt);
-	    if (kr != KERN_SUCCESS) {
-		fprintf(stderr, "%s: task_zone_info: %s\n",
-			program, mach_error_string(kr));
-		exit(1);
-	    }
-	} else {
-	    mach_zone_info_t *zinfo = NULL;
+		if (nameCnt != infoCnt) {
+			fprintf(stderr, "%s: mach_zone_name/ mach_zone_info: counts not equal?\n",
+					program);
+			exit(1);
+		}
 
-	    kr = mach_memory_info(mach_host_self(),
-				&name, &nameCnt, &zinfo, &infoCnt,
-				&wiredInfo, &wiredInfoCnt);
-	    if (kr != KERN_SUCCESS) {
-	        fprintf(stderr, "%s: mach_zone_info: %s\n",
-			program, mach_error_string(kr));
-		exit(1);
-	    }
+		if (first_time) {
+			deltas = (char *)malloc(infoCnt);
+			max_info = (mach_zone_info_t *)malloc((infoCnt * sizeof *info));
+		}
 
-	    kr = vm_allocate(mach_task_self(), (vm_address_t *)&info,
-			     infoCnt * sizeof *info, VM_FLAGS_ANYWHERE);
-	    if (kr != KERN_SUCCESS) {
-		    fprintf(stderr, "%s vm_allocate: %s\n",
-			    program, mach_error_string(kr));
-		    exit(1);
-	    }
-	    for (i = 0; i < infoCnt; i++) {
-		    *(mach_zone_info_t *)(info + i) = zinfo[i];
-		    info[i].tzi_caller_acct = 0;
-		    info[i].tzi_task_alloc = 0;
-		    info[i].tzi_task_free = 0;
-	    }
-	    kr = vm_deallocate(mach_task_self(), (vm_address_t) zinfo,
-			       (vm_size_t) (infoCnt * sizeof *zinfo));
-	    if (kr != KERN_SUCCESS) {
-		    fprintf(stderr, "%s: vm_deallocate: %s\n",
-			    program, mach_error_string(kr));
-		    exit(1);
-	    }
-	}
+		if (SortZones) {
+			for (i = 0; i < nameCnt-1; i++) {
+				for (j = i+1; j < nameCnt; j++) {
+					unsigned long long wastei, wastej;
 
-	if (nameCnt != infoCnt) {
-		fprintf(stderr, "%s: mach/task_zone_info: counts not equal?\n",
-			program);
-		exit(1);
-	}
+					wastei = (info[i].mzi_cur_size -
+							(info[i].mzi_elem_size *
+							 info[i].mzi_count));
+					wastej = (info[j].mzi_cur_size -
+							(info[j].mzi_elem_size *
+							 info[j].mzi_count));
 
-	if (first_time) {
-		deltas = (char *)malloc(infoCnt);
-		max_info = (task_zone_info_t *)malloc((infoCnt * sizeof *info));
-	}
+					if (wastej > wastei) {
+						mach_zone_info_t tinfo;
+						mach_zone_name_t tname;
 
-	if (SortZones) {
-		for (i = 0; i < nameCnt-1; i++)
-			for (j = i+1; j < nameCnt; j++) {
-				unsigned long long wastei, wastej;
+						tinfo = info[i];
+						info[i] = info[j];
+						info[j] = tinfo;
 
-				wastei = (info[i].tzi_cur_size -
-					  (info[i].tzi_elem_size *
-					   info[i].tzi_count));
-				wastej = (info[j].tzi_cur_size -
-					  (info[j].tzi_elem_size *
-					   info[j].tzi_count));
-
-				if (wastej > wastei) {
-					task_zone_info_t tinfo;
-					mach_zone_name_t tname;
-
-					tinfo = info[i];
-					info[i] = info[j];
-					info[j] = tinfo;
-
-					tname = name[i];
-					name[i] = name[j];
-					name[j] = tname;
+						tname = name[i];
+						name[i] = name[j];
+						name[j] = tname;
+					}
 				}
 			}
-	}
-
-	must_print = find_deltas(name, info, max_info, deltas, infoCnt, first_time);
-	if (must_print) {
-		if (ColFormat) {
-			if (!first_time)
-				printf("\n");
-			colprintzoneheader();
 		}
-		for (i = 0; i < nameCnt; i++) {
-			if (deltas[i]) {
-				if (ColFormat)
-					colprintzone(&name[i], &info[i]);
-				else
-					printzone(&name[i], &info[i]);
+
+		must_print = find_deltas(name, info, max_info, deltas, infoCnt, first_time);
+		zoneElements = 0;
+		if (must_print) {
+			if (ColFormat) {
+				if (!first_time)
+					printf("\n");
+				colprintzoneheader();
+			}
+			for (i = 0; i < nameCnt; i++) {
+				if (deltas[i]) {
+					if (ColFormat)
+						colprintzone(&name[i], &info[i]);
+					else
+						printzone(&name[i], &info[i]);
+					zoneElements += info[i].mzi_count;
+				}
 			}
 		}
-	}
 
-	if (ShowLarge && first_time) {
-		PrintLarge(wiredInfo, wiredInfoCnt,
-			   SortZones ? &SortSize : &SortName, ColFormat);
-	}
-
-	first_time = 0;
-
-	if ((name != NULL) && (nameCnt != 0)) {
-		kr = vm_deallocate(mach_task_self(), (vm_address_t) name,
-				   (vm_size_t) (nameCnt * sizeof *name));
-		if (kr != KERN_SUCCESS) {
-			fprintf(stderr, "%s: vm_deallocate: %s\n",
-			     program, mach_error_string(kr));
-			exit(1);
+		if (ShowLarge && first_time) {
+			PrintLarge(wiredInfo, wiredInfoCnt, &info[0], &name[0],
+					nameCnt, zoneElements,
+					SortZones ? &SortSize : &SortName, ColFormat);
 		}
-	}
 
-	if ((info != NULL) && (infoCnt != 0)) {
-		kr = vm_deallocate(mach_task_self(), (vm_address_t) info,
-				   (vm_size_t) (infoCnt * sizeof *info));
-		if (kr != KERN_SUCCESS) {
-			fprintf(stderr, "%s: vm_deallocate: %s\n",
-			     program, mach_error_string(kr));
-			exit(1);
+		first_time = 0;
+
+		if ((name != NULL) && (nameCnt != 0)) {
+			kr = vm_deallocate(mach_task_self(), (vm_address_t) name,
+					(vm_size_t) (nameCnt * sizeof *name));
+			if (kr != KERN_SUCCESS) {
+				fprintf(stderr, "%s: vm_deallocate: %s\n",
+						program, mach_error_string(kr));
+				exit(1);
+			}
 		}
-	}
 
-	if ((wiredInfo != NULL) && (wiredInfoCnt != 0)) {
-		kr = vm_deallocate(mach_task_self(), (vm_address_t) wiredInfo,
-				   (vm_size_t) (wiredInfoCnt * sizeof *wiredInfo));
-		if (kr != KERN_SUCCESS) {
-			fprintf(stderr, "%s: vm_deallocate: %s\n",
-			     program, mach_error_string(kr));
-			exit(1);
+		if ((info != NULL) && (infoCnt != 0)) {
+			kr = vm_deallocate(mach_task_self(), (vm_address_t) info,
+					(vm_size_t) (infoCnt * sizeof *info));
+			if (kr != KERN_SUCCESS) {
+				fprintf(stderr, "%s: vm_deallocate: %s\n",
+						program, mach_error_string(kr));
+				exit(1);
+			}
 		}
+
+		if ((wiredInfo != NULL) && (wiredInfoCnt != 0)) {
+			kr = vm_deallocate(mach_task_self(), (vm_address_t) wiredInfo,
+					(vm_size_t) (wiredInfoCnt * sizeof *wiredInfo));
+			if (kr != KERN_SUCCESS) {
+				fprintf(stderr, "%s: vm_deallocate: %s\n",
+						program, mach_error_string(kr));
+				exit(1);
+			}
+		}
+
+		if ((ShowWasted||ShowTotal) && PrintHeader && !ShowDeltas) {
+			printf("\nZONE TOTALS\n");
+			printf("---------------------------------------------\n");
+			printf("TOTAL SIZE        = %llu\n", totalsize);
+			printf("TOTAL USED        = %llu\n", totalused);
+			if (ShowWasted) {
+				printf("TOTAL WASTED      = %llu\n", totalsize - totalused);
+				printf("TOTAL FRAGMENTED  = %llu\n", totalfragmented);
+				printf("TOTAL COLLECTABLE = %llu\n", totalcollectable);
+			}
+			if (ShowTotal)
+				printf("TOTAL ALLOCS      = %llu\n", totalsum);
+		}
+
+		if (ShowDeltas == FALSE || last_time)
+			break;
+
+		sleep(interval);
 	}
-
-	if ((ShowWasted||ShowTotal) && PrintHeader && !ShowDeltas) {
-		printf("TOTAL SIZE   = %llu\n", totalsize);
-		printf("TOTAL USED   = %llu\n", totalused);
-		if (ShowWasted)
-			printf("TOTAL WASTED = %llu\n", totalsize - totalused);
-		if (ShowTotal)
-			printf("TOTAL ALLOCS = %llu\n", totalsum);
-	}
-
-	if (ShowDeltas == FALSE || last_time)
-	        break;
-
-	sleep(interval);
-    }
     exit(0);
 }
 
@@ -401,64 +432,55 @@ substr(const char *a, size_t alen, const char *b, size_t blen)
 }
 
 static void
-printzone(mach_zone_name_t *name, task_zone_info_t *info)
+printzone(mach_zone_name_t *name, mach_zone_info_t *info)
 {
-	unsigned long long used, size;
+	unsigned long long used, size, fragmented, collectable;
 
 	printf("%.*s zone:\n", (int)sizeof name->mzn_name, name->mzn_name);
 	printf("\tcur_size:    %lluK bytes (%llu elements)\n",
-	       info->tzi_cur_size/1024,
-	       (info->tzi_elem_size == 0) ? 0 :
-	       info->tzi_cur_size/info->tzi_elem_size);
+	       info->mzi_cur_size/1024,
+	       (info->mzi_elem_size == 0) ? 0 :
+	       info->mzi_cur_size/info->mzi_elem_size);
 	printf("\tmax_size:    %lluK bytes (%llu elements)\n",
-	       info->tzi_max_size/1024,
-	       (info->tzi_elem_size == 0) ? 0 :
-	       info->tzi_max_size/info->tzi_elem_size);
+	       info->mzi_max_size/1024,
+	       (info->mzi_elem_size == 0) ? 0 :
+	       info->mzi_max_size/info->mzi_elem_size);
 	printf("\telem_size:   %llu bytes\n",
-	       info->tzi_elem_size);
+	       info->mzi_elem_size);
 	printf("\t# of elems:  %llu\n",
-	       info->tzi_count);
+	       info->mzi_count);
 	printf("\talloc_size:  %lluK bytes (%llu elements)\n",
-	       info->tzi_alloc_size/1024,
-	       (info->tzi_elem_size == 0) ? 0 :
-	       info->tzi_alloc_size/info->tzi_elem_size);
-	if (info->tzi_exhaustible)
+	       info->mzi_alloc_size/1024,
+	       (info->mzi_elem_size == 0) ? 0 :
+	       info->mzi_alloc_size/info->mzi_elem_size);
+	if (info->mzi_exhaustible)
 		printf("\tEXHAUSTIBLE\n");
-	if (info->tzi_collectable)
+	if (GET_MZI_COLLECTABLE_FLAG(info->mzi_collectable))
 		printf("\tCOLLECTABLE\n");
-	if (ShowPid && info->tzi_caller_acct)
-		printf("\tCALLER ACCOUNTED\n");
-	if (ShowPid) {
-		pidsum += info->tzi_task_alloc - info->tzi_task_free;
-		printf("\tproc_alloc_size: %8dK bytes (%llu elements)\n",
-		       (int)((info->tzi_task_alloc - info->tzi_task_free)/1024),
-		       (info->tzi_elem_size == 0) ? 0 :
-		       (info->tzi_task_alloc - info->tzi_task_free)/info->tzi_elem_size);
-	}
 	if (ShowWasted) {
-		totalused += used = info->tzi_elem_size * info->tzi_count;
-		totalsize += size = info->tzi_cur_size;
+		totalused += used = info->mzi_elem_size * info->mzi_count;
+		totalsize += size = info->mzi_cur_size;
+		totalcollectable += collectable = GET_MZI_COLLECTABLE_BYTES(info->mzi_collectable);
+		totalfragmented += fragmented = size - used - collectable;
 		printf("\t\t\t\t\tWASTED: %llu\n", size - used);
+		printf("\t\t\t\t\tFRAGMENTED: %llu\n", fragmented);
+		printf("\t\t\t\t\tCOLLECTABLE: %llu\n", collectable);
 	}
 	if (ShowTotal) {
-		totalsum += info->tzi_sum_size;
+		totalsum += info->mzi_sum_size;
 		printf("\t\t\t\t\tTOTAL: %llu\n", totalsum);
-		if (ShowPid)
-			printf("\t\t\t\t\tPID TOTAL: %llu\n", pidsum);
 	}
 }
 
 static void
-colprintzone(mach_zone_name_t *zone_name, task_zone_info_t *info)
+colprintzone(mach_zone_name_t *zone_name, mach_zone_info_t *info)
 {
 	char *name = zone_name->mzn_name;
 	int j, namewidth;
-	unsigned long long used, size;
+	unsigned long long used, size, fragmented, collectable;
 
-	namewidth = 25;
-	if (ShowWasted || ShowTotal) {
-		namewidth -= 7;
-	}
+	namewidth = columns[COL_ZONE_NAME].colwidth;
+
 	for (j = 0; j < namewidth - 1 && name[j]; j++) {
 		if (name[j] == ' ') {
 			putchar('.');
@@ -477,79 +499,101 @@ colprintzone(mach_zone_name_t *zone_name, task_zone_info_t *info)
 			putchar(' ');
 		}
 	}
-	printf(" %6llu", info->tzi_elem_size);
-	PRINTK(" %10llu", info->tzi_cur_size);
-	if (info->tzi_max_size / 1024 > 9999999) {
-		printf("    --------");
-	} else {
-		PRINTK(" %10llu", info->tzi_max_size);
-	}
-	printf(" %10llu", info->tzi_cur_size / info->tzi_elem_size);
-	if (info->tzi_max_size / 1024 >= 999999999) {
-		printf("  ----------");
-	} else {
-		printf(" %11llu", info->tzi_max_size / info->tzi_elem_size);
-	}
-	printf(" %11llu", info->tzi_count);
-	PRINTK(" %5llu", info->tzi_alloc_size);
-	printf(" %6llu", info->tzi_alloc_size / info->tzi_elem_size);
 
-	totalused += used = info->tzi_elem_size * info->tzi_count;
-	totalsize += size = info->tzi_cur_size;
-	totalsum += info->tzi_sum_size;
 
-	printf(" %c%c%c",
-	       (info->tzi_exhaustible ? 'X' : ' '),
-	       (info->tzi_caller_acct ? 'A' : ' '),
-	       (info->tzi_collectable ? 'C' : ' '));
-	if (ShowWasted) {
-		PRINTK(" %8llu", size - used);
+#define PRINTCOL(value, index)																				\
+	if (columns[(index)].visible) {																			\
+		printf(" %*llu", columns[(index)].colwidth * columns[(index)].alignment, (value));					\
 	}
-	if (ShowPid) {
-		printf("%8dK", (int)((info->tzi_task_alloc - info->tzi_task_free)/1024));
+#define PRINTCOLSTR(value, index)																			\
+	if (columns[(index)].visible) {																			\
+		printf(" %*s", columns[(index)].colwidth * columns[(index)].alignment, (value));					\
 	}
-	if (ShowTotal) {
-		if (info->tzi_sum_size < 1024)
-			printf(" %16lluB", info->tzi_sum_size);
-		else
-			PRINTK(" %16llu", info->tzi_sum_size);
+#define PRINTCOLK(value, index)																				\
+	if (columns[(index)].visible) {																			\
+		printf(" %*lluK", (columns[(index)].colwidth - 1) * columns[(index)].alignment, (value) / 1024 );	\
 	}
+#define PRINTCOLSZ(value, index)																			\
+	if (columns[(index)].visible) {																			\
+		if ((value) < 1024) {																				\
+			printf(" %*lluB", (columns[(index)].colwidth - 1) * columns[(index)].alignment, (value));		\
+		} else {																							\
+			PRINTCOLK(value, index)																			\
+		}																									\
+	}
+
+
+	PRINTCOL(info->mzi_elem_size, COL_ELEM_SIZE);
+	PRINTCOLK(info->mzi_cur_size, COL_CUR_SIZE);
+	if (info->mzi_max_size / 1024 > 9999999) {
+		/*
+		 * Zones with preposterously large maximum sizes are shown with `-------'
+		 * in the max size and max num elts fields.
+		 */
+		PRINTCOLSTR("-------", COL_MAX_SIZE);
+	} else {
+		PRINTCOLK(info->mzi_max_size, COL_MAX_SIZE);
+	}
+	PRINTCOL(info->mzi_cur_size / info->mzi_elem_size, COL_CUR_ELTS);
+	if (info->mzi_max_size / 1024 > 9999999) {
+		PRINTCOLSTR("-------", COL_MAX_ELTS);
+	} else {
+		PRINTCOL(info->mzi_max_size / info->mzi_elem_size, COL_MAX_ELTS);
+	}
+	PRINTCOL(info->mzi_count, COL_CUR_INUSE);
+	PRINTCOLK(info->mzi_alloc_size, COL_ALLOC_SIZE);
+	PRINTCOL(info->mzi_alloc_size / info->mzi_elem_size, COL_ALLOC_COUNT);
+
+	totalused += used = info->mzi_elem_size * info->mzi_count;
+	totalsize += size = info->mzi_cur_size;
+	totalsum += info->mzi_sum_size;
+	totalcollectable += collectable = GET_MZI_COLLECTABLE_BYTES(info->mzi_collectable);
+	totalfragmented += fragmented = size - used - collectable;
+
+	printf(" %c%c",
+	       (info->mzi_exhaustible ? 'X' : ' '),
+	       (GET_MZI_COLLECTABLE_FLAG(info->mzi_collectable) ? 'C' : ' '));
+
+	PRINTCOLSZ(fragmented, COL_FRAG_SIZE);
+	PRINTCOLSZ(collectable, COL_FREE_SIZE);
+	PRINTCOLSZ(info->mzi_sum_size, COL_TOTAL_ALLOCS);
+
 	printf("\n");
 }
+
 
 static void
 colprintzoneheader(void)
 {
+	int i, totalwidth = 0;
+
 	if (! PrintHeader) {
 		return;
 	}
-	printf("%s                     elem         cur         max        cur         max"
-	       "         cur  alloc  alloc    %s%s\n", 
-	       (ShowWasted||ShowTotal)? "" : "       ",
-	       (ShowWasted)? "          ":"",
-	       (ShowPid) ? "      PID" : "" );
-	printf("zone name%s           size        size        size      #elts       #elts"
-	       "       inuse   size  count    ", (ShowWasted||ShowTotal)? " " : "        " );
-	if (ShowWasted)
-		printf("    wasted");
-	if (ShowPid)
-		printf("   Allocs");
-	if (ShowTotal)
-		printf("      Total Allocs");
-	printf("\n%s-------------------------------------------------------"
-	       "-----------------------------------------------",
-	       (ShowWasted||ShowTotal)? "" : "-------");
-	if (ShowWasted)
-		printf("----------");
-	if (ShowPid)
-		printf("---------");
-	if (ShowTotal)
-		printf("------------------");
+
+	for (i = 0; i < COL_MAX; i++) {
+		if (columns[i].visible) {
+			printf("%*s ", columns[i].colwidth * columns[i].alignment, columns[i].line1);
+		}
+	}
+	printf("\n");
+
+	for (i = 0; i < COL_MAX; i++) {
+		if (columns[i].visible) {
+			printf("%*s ", columns[i].colwidth * columns[i].alignment, columns[i].line2);
+			totalwidth += (columns[i].colwidth + 1);
+		}
+	}
+
+	printf("\n");
+	for (i = 0; i < totalwidth; i++) {
+		printf("-");
+	}
 	printf("\n");
 }
 
 int
-find_deltas(mach_zone_name_t *name, task_zone_info_t *info, task_zone_info_t *max_info,
+find_deltas(mach_zone_name_t *name, mach_zone_info_t *info, mach_zone_info_t *max_info,
 	    char *deltas, int cnt, int first_time)
 {
        int i;
@@ -559,10 +603,10 @@ find_deltas(mach_zone_name_t *name, task_zone_info_t *info, task_zone_info_t *ma
 	       deltas[i] = 0;
 	       if (substr(zname, znamelen, name[i].mzn_name,
 			  strnlen(name[i].mzn_name, sizeof name[i].mzn_name))) {
-		       if (first_time || info->tzi_cur_size > max_info->tzi_cur_size ||
-			   (ShowTotal && ((info->tzi_sum_size >> 1) > max_info->tzi_sum_size))) {
-			       max_info->tzi_cur_size = info->tzi_cur_size;
-			       max_info->tzi_sum_size = info->tzi_sum_size;
+		       if (first_time || info->mzi_cur_size > max_info->mzi_cur_size ||
+			   (ShowTotal && ((info->mzi_sum_size >> 1) > max_info->mzi_sum_size))) {
+			       max_info->mzi_cur_size = info->mzi_cur_size;
+			       max_info->mzi_sum_size = info->mzi_sum_size;
 			       deltas[i] = 1;
 			       found_one = 1;
 		       }
@@ -629,8 +673,10 @@ kern_vm_counter_name(uint64_t tag)
 	case (VM_KERN_COUNT_MANAGED):		name = "VM_KERN_COUNT_MANAGED"; break;
 	case (VM_KERN_COUNT_RESERVED):		name = "VM_KERN_COUNT_RESERVED"; break;
 	case (VM_KERN_COUNT_WIRED):		name = "VM_KERN_COUNT_WIRED"; break;
+	case (VM_KERN_COUNT_WIRED_BOOT):	name = "VM_KERN_COUNT_WIRED_BOOT"; break;
 	case (VM_KERN_COUNT_WIRED_MANAGED):	name = "VM_KERN_COUNT_WIRED_MANAGED"; break;
 	case (VM_KERN_COUNT_STOLEN):		name = "VM_KERN_COUNT_STOLEN"; break;
+	case (VM_KERN_COUNT_BOOT_STOLEN):	name = "VM_KERN_COUNT_BOOT_STOLEN"; break;
 	case (VM_KERN_COUNT_LOPAGE):		name = "VM_KERN_COUNT_LOPAGE"; break;
 	case (VM_KERN_COUNT_MAP_KERNEL):	name = "VM_KERN_COUNT_MAP_KERNEL"; break;
 	case (VM_KERN_COUNT_MAP_ZONE):		name = "VM_KERN_COUNT_MAP_ZONE"; break;
@@ -661,10 +707,12 @@ static CFMutableDictionaryRef    gTagDict;
 static mach_memory_info_t *  gSites;
 
 static char *
-GetSiteName(int siteIdx)
+GetSiteName(int siteIdx, mach_zone_name_t * zoneNames, unsigned int zoneNamesCnt)
 {
     const char      * name;
+    uintptr_t         kmodid;
     char            * result;
+    char            * append;
     mach_vm_address_t addr;
     CFDictionaryRef   kextInfo;
     CFStringRef       bundleID;
@@ -681,7 +729,13 @@ GetSiteName(int siteIdx)
     site = &gSites[siteIdx];
     addr = site->site;
     type = (VM_KERN_SITE_TYPE & site->flags);
-    switch (type)
+    kmodid = 0;
+
+    if (VM_KERN_SITE_NAMED & site->flags)
+    {
+	asprintf(&result, "%s", &site->name[0]);
+    }
+    else switch (type)
     {
 	case VM_KERN_SITE_TAG:
 	    result = kern_vm_tag_name(addr);
@@ -692,14 +746,18 @@ GetSiteName(int siteIdx)
 	    break;
 
 	case VM_KERN_SITE_KMOD:
-	    kextInfo = CFDictionaryGetValue(gTagDict, (const void *)(uintptr_t) addr);
+
+	    kmodid = (uintptr_t) addr;
+	    kextInfo = CFDictionaryGetValue(gTagDict, (const void *)kmodid);
 	    if (kextInfo)
 	    {
 		bundleID = (CFStringRef)CFDictionaryGetValue(kextInfo,  kCFBundleIdentifierKey);
 		name = CFStringGetCStringPtr(bundleID, kCFStringEncodingUTF8);
 	    //    wiredSize = (CFNumberRef)CFDictionaryGetValue(kextInfo, CFSTR(kOSBundleWiredSizeKey));
 	    }
-	    asprintf(&result,  "%-64s%3lld", name ?  name : "(unknown kmod)", addr);
+
+	    if (name) asprintf(&result,  "%s", name);
+	    else      asprintf(&result,  "(unloaded kmod)");
 	    break;
 
 	case VM_KERN_SITE_KERNEL:
@@ -726,24 +784,63 @@ GetSiteName(int siteIdx)
 	    break;
     }
 
-     return (result);
+    if (result
+	&& (VM_KERN_SITE_ZONE & site->flags)
+	&& zoneNames
+	&& (site->zone < zoneNamesCnt))
+    {
+        size_t namelen, zonelen;
+	namelen = strlen(result);
+	zonelen = strnlen(zoneNames[site->zone].mzn_name, sizeof(zoneNames[site->zone].mzn_name));
+	if (((namelen + zonelen) > 61) && (zonelen < 61)) namelen = (61 - zonelen);
+	asprintf(&append, "%.*s[%.*s]",
+		    (int)namelen,
+		    result,
+		    (int)zonelen,
+		    zoneNames[site->zone].mzn_name);
+	free(result);
+	result = append;
+    }
+    if (result && kmodid)
+    {
+	asprintf(&append, "%-64s%3ld", result, kmodid);
+	free(result);
+	result = append;
+    }
+
+    return (result);
 }
 
-static int
-SortName(const void * left, const void * right)
+struct CompareThunk
 {
+    mach_zone_name_t *zoneNames;
+    unsigned int      zoneNamesCnt;
+};
+
+static int
+SortName(void * thunk, const void * left, const void * right)
+{
+    const struct CompareThunk * t = (typeof(t)) thunk;
     const int * idxL;
     const int * idxR;
     char * l;
     char * r;
+    CFStringRef lcf;
+    CFStringRef rcf;
     int result;
 
     idxL = (typeof(idxL)) left;
     idxR = (typeof(idxR)) right;
-    l = GetSiteName(*idxL);
-    r = GetSiteName(*idxR);
+    l = GetSiteName(*idxL, t->zoneNames, t->zoneNamesCnt);
+    r = GetSiteName(*idxR, t->zoneNames, t->zoneNamesCnt);
 
-    result = strcmp(l, r);
+    lcf = CFStringCreateWithCString(kCFAllocatorDefault, l, kCFStringEncodingUTF8);
+    rcf = CFStringCreateWithCString(kCFAllocatorDefault, r, kCFStringEncodingUTF8);
+
+    result = (int) CFStringCompareWithOptionsAndLocale(lcf, rcf, CFRangeMake(0, CFStringGetLength(lcf)), kCFCompareNumerically, NULL);
+
+    CFRelease(lcf);
+    CFRelease(rcf);
     free(l);
     free(r);
 
@@ -751,7 +848,7 @@ SortName(const void * left, const void * right)
 }
 
 static int
-SortSize(const void * left, const void * right)
+SortSize(void * thunk, const void * left, const void * right)
 {
     const mach_memory_info_t * siteL;
     const mach_memory_info_t * siteR;
@@ -771,10 +868,14 @@ SortSize(const void * left, const void * right)
 
 static void
 PrintLarge(mach_memory_info_t *wiredInfo, unsigned int wiredInfoCnt,
-		int (*func)(const void *, const void *), boolean_t column)
+		mach_zone_info_t *zoneInfo, mach_zone_name_t *zoneNames,
+		unsigned int zoneCnt, uint64_t zoneElements,
+		int (*func)(void *, const void *, const void *), boolean_t column)
 {
     uint64_t zonetotal;
     uint64_t top_wired;
+    uint64_t size;
+    uint64_t elemsTagged;
 
     CFDictionaryRef allKexts;
     unsigned int idx, site, first;
@@ -802,36 +903,55 @@ PrintLarge(mach_memory_info_t *wiredInfo, unsigned int wiredInfoCnt,
 
     for (idx = 0; idx < wiredInfoCnt; idx++) sorted[idx] = idx;
     first = 0; // VM_KERN_MEMORY_FIRST_DYNAMIC
-    qsort(&sorted[first],
+    struct CompareThunk thunk;
+    thunk.zoneNames    = zoneNames;
+    thunk.zoneNamesCnt = zoneCnt;
+    qsort_r(&sorted[first],
 	    wiredInfoCnt - first,
 	    sizeof(sorted[0]),
+	    &thunk,
 	    func);
 
+    elemsTagged = 0;
     for (headerPrinted = false, idx = 0; idx < wiredInfoCnt; idx++)
     {
         site = sorted[idx];
-	if (!gSites[site].size) continue;
-	if (VM_KERN_COUNT_WIRED == gSites[site].site) top_wired = gSites[site].size;
+	if ((VM_KERN_SITE_COUNTER & gSites[site].flags)
+	    && (VM_KERN_COUNT_WIRED == gSites[site].site)) top_wired = gSites[site].size;
 	if (VM_KERN_SITE_HIDE & gSites[site].flags) continue;
-	if (!(VM_KERN_SITE_WIRED & gSites[site].flags)) continue;
+	if (!((VM_KERN_SITE_WIRED | VM_KERN_SITE_ZONE) & gSites[site].flags)) continue;
 
-	name = GetSiteName(site);
+	if ((VM_KERN_SITE_ZONE & gSites[site].flags)
+	   && gSites[site].zone < zoneCnt)
+	{
+	    elemsTagged += gSites[site].size / zoneInfo[gSites[site].zone].mzi_elem_size;
+	}
+
+	if ((gSites[site].size < 1024) && (gSites[site].peak < 1024)) continue;
+
+	name = GetSiteName(site, zoneNames, zoneCnt);
         if (!substr(zname, znamelen, name, strlen(name))) continue;
         if (!headerPrinted)
         {
             printf("-------------------------------------------------------------------------------------------------------------\n");
-            printf("                                                               kmod          vm                       cur\n");
-            printf("wired memory                                                     id         tag                      size\n");
+            printf("                                                               kmod          vm        peak               cur\n");
+            printf("wired memory                                                     id         tag        size  waste       size\n");
             printf("-------------------------------------------------------------------------------------------------------------\n");
             headerPrinted = true;
         }
 	printf("%-67s", name);
 	free(name);
-	printf("%12d", site);
+	printf("%12d", gSites[site].tag);
 
-	printf(" %11s", "");
-	PRINTK(" %12llu", gSites[site].size);
-	totalsize += gSites[site].size;
+	if (gSites[site].peak) PRINTK(" %10llu", gSites[site].peak);
+	else                   printf(" %11s", "");
+
+	if (gSites[site].collectable_bytes)	PRINTK(" %5llu", gSites[site].collectable_bytes);
+	else                                    printf(" %6s", "");
+
+	PRINTK(" %9llu", gSites[site].size);
+
+	if (!(VM_KERN_SITE_ZONE & gSites[site].flags)) totalsize += gSites[site].size;
 
 	printf("\n");
     }
@@ -841,38 +961,51 @@ PrintLarge(mach_memory_info_t *wiredInfo, unsigned int wiredInfoCnt,
         printf("%-67s", "zones");
         printf("%12s", "");
         printf(" %11s", "");
-        PRINTK(" %12llu", zonetotal);
+        printf(" %6s", "");
+        PRINTK(" %9llu", zonetotal);
         printf("\n");
     }
     if (headerPrinted)
     {
+        if (elemsTagged)
+        {
+	    snprintf(totalstr, sizeof(totalstr), "%lld of %lld", elemsTagged, zoneElements);
+	    printf("zone tags%100s\n", totalstr);
+        }
         snprintf(totalstr, sizeof(totalstr), "%6.2fM of %6.2fM", totalsize / 1024.0 / 1024.0, top_wired / 1024.0 / 1024.0);
-        printf("total%100s\n", totalstr);
+        printf("total%104s\n", totalstr);
     }
     for (headerPrinted = false, idx = 0; idx < wiredInfoCnt; idx++)
     {
         site = sorted[idx];
-	if (!gSites[site].size) continue;
+        size = gSites[site].mapped;
+	if (!size) continue;
 	if (VM_KERN_SITE_HIDE & gSites[site].flags) continue;
-	if (VM_KERN_SITE_WIRED & gSites[site].flags) continue;
+	if ((size == gSites[site].size)
+		&& ((VM_KERN_SITE_WIRED | VM_KERN_SITE_ZONE) & gSites[site].flags)) continue;
 
-	name = GetSiteName(site);
+	name = GetSiteName(site, NULL, 0);
         if (!substr(zname, znamelen, name, strlen(name))) continue;
         if (!headerPrinted)
         {
             printf("-------------------------------------------------------------------------------------------------------------\n");
-            printf("                                                                                    largest\n");
-            printf("maps                                                                       free        free          size\n");
+            printf("                                                                        largest        peak               cur\n");
+            printf("maps                                                           free        free        size              size\n");
             printf("-------------------------------------------------------------------------------------------------------------\n");
             headerPrinted = true;
         }
-	printf("%-67s", name);
+	printf("%-55s", name);
 	free(name);
 
-	PRINTK(" %10llu", gSites[site].free);
-	PRINTK(" %10llu", gSites[site].largest);
-	PRINTK(" %12llu", gSites[site].size);
+	if (gSites[site].free)    PRINTK(" %10llu", gSites[site].free);
+	else                      printf(" %11s", "");
+	if (gSites[site].largest) PRINTK(" %10llu", gSites[site].largest);
+	else                      printf(" %11s", "");
+	if (gSites[site].peak)    PRINTK(" %10llu", gSites[site].peak);
+	else                      printf(" %11s", "");
+	PRINTK(" %16llu", size);
 
 	printf("\n");
     }
+	totalsize = zonetotal;
 }

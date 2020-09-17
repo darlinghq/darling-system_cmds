@@ -21,4 +21,4 @@ install(TARGETS login-exe DESTINATION libexec/darling/usr/bin)
 
 install(FILES login.1 DESTINATION libexec/darling/usr/share/man/man1)
 
-install(DIRECTORY login.tproj/pam.d DESTINATION libexec/darling/etc)
+install(DIRECTORY pam.d DESTINATION libexec/darling/etc)

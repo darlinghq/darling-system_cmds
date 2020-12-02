@@ -1,4 +1,7 @@
+// according to IOKit, TargetConditionals.h is broken in MIG
+#ifndef DARLING
 #include <TargetConditionals.h>
+#endif
 #if (TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR)
 subsystem dummy 0;
 #else

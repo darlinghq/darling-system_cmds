@@ -8,6 +8,7 @@ add_compile_options(
 	-nostdinc
 	-fPIC
 	-fblocks
+	-Wno-error=int-conversion
 )
 
 add_subdirectory(ac.tproj)

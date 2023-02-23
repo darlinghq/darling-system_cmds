@@ -25,6 +25,7 @@
 #define system_cmds_common_h
 
 #include <mach/mach.h>
+#include <mach_debug/ipc_info.h>
 #include "json.h"
 
 #define PROC_NAME_LEN 100
@@ -46,7 +47,7 @@ extern struct prog_configs lsmp_config;
 /* exception port information */
 struct exc_port_info {
     mach_msg_type_number_t   count;
-    mach_port_t      ports[EXC_TYPES_COUNT];
+    ipc_info_port_t  ports_info[EXC_TYPES_COUNT];
     exception_mask_t masks[EXC_TYPES_COUNT];
     exception_behavior_t behaviors[EXC_TYPES_COUNT];
     thread_state_flavor_t flavors[EXC_TYPES_COUNT];
@@ -74,7 +75,7 @@ struct k2n_table_node *k2n_table_lookup(struct k2n_table_node **table, natural_t
 
 /* private structure to wrap up per-task info */
 typedef struct my_per_task_info {
-    task_t task;
+    task_read_t task;
     pid_t pid;
     vm_address_t task_kobject;
     ipc_info_space_t info;
@@ -97,8 +98,8 @@ typedef struct my_per_task_info {
  * Need to stay in sync to print accurate results.
  */
 #define IKOT_NONE                  0
-#define IKOT_THREAD                1
-#define IKOT_TASK                  2
+#define IKOT_THREAD_CONTROL        1
+#define IKOT_TASK_CONTROL          2
 #define IKOT_HOST                  3
 #define IKOT_HOST_PRIV             4
 #define IKOT_PROCESSOR             5
@@ -123,7 +124,7 @@ typedef struct my_per_task_info {
 #define IKOT_LOCK_SET             24
 #define IKOT_CLOCK                25
 #define IKOT_CLOCK_CTRL           26
-#define IKOT_IOKIT_SPARE          27
+#define IKOT_IOKIT_IDENT          27
 #define IKOT_NAMED_ENTRY          28
 #define IKOT_IOKIT_CONNECT        29
 #define IKOT_IOKIT_OBJECT         30
@@ -135,7 +136,19 @@ typedef struct my_per_task_info {
 #define IKOT_TASK_RESUME          36
 #define IKOT_VOUCHER              37
 #define IKOT_VOUCHER_ATTR_CONTROL 38
-#define IKOT_UNKNOWN              39	/* magic catchall	*/
+#define IKOT_WORK_INTERVAL        39
+#define IKOT_UX_HANDLER           40
+#define IKOT_UEXT_OBJECT          41
+#define IKOT_ARCADE_REG           42
+#define IKOT_EVENTLINK            43
+#define IKOT_TASK_INSPECT         44
+#define IKOT_TASK_READ            45
+#define IKOT_THREAD_INSPECT       46
+#define IKOT_THREAD_READ          47
+#define IKOT_SUID_CRED            48
+#define IKOT_HYPERVISOR           49
+
+#define IKOT_UNKNOWN              50	/* magic catchall	*/
 #define IKOT_MAX_TYPE             (IKOT_UNKNOWN+1)	/* # of IKOT_ types	*/
 
 
@@ -169,12 +182,12 @@ char *copy_voucher_detail(mach_port_t task, mach_port_name_t voucher, JSON_t jso
 
 /* mach port related functions */
 const char * kobject_name(natural_t kotype);
-void get_receive_port_context(task_t taskp, mach_port_name_t portname, mach_port_context_t *context);
-int get_recieve_port_status(task_t taskp, mach_port_name_t portname, mach_port_info_ext_t *info);
+void get_receive_port_context(task_read_t taskp, mach_port_name_t portname, mach_port_context_t *context);
+int get_recieve_port_status(task_read_t taskp, mach_port_name_t portname, mach_port_info_ext_t *info);
 void show_task_mach_ports(my_per_task_info_t *taskinfo, uint32_t taskCount, my_per_task_info_t *allTaskInfos, JSON_t json);
 
 /* task and thread related helper functions */
-kern_return_t collect_per_task_info(my_per_task_info_t *taskinfo, task_t target_task);
+kern_return_t collect_per_task_info(my_per_task_info_t *taskinfo, task_read_t target_task);
 my_per_task_info_t * allocate_taskinfo_memory(uint32_t taskCount);
 void deallocate_taskinfo_memory(my_per_task_info_t *data);
 kern_return_t print_task_exception_info(my_per_task_info_t *taskinfo, JSON_t json);
@@ -183,8 +196,8 @@ my_per_task_info_t * get_taskinfo_by_kobject(natural_t kobj);
 
 void get_exc_behavior_string(exception_behavior_t b, char *out_string, size_t len);
 void get_exc_mask_string(exception_mask_t m, char *out_string, size_t len);
-kern_return_t get_taskinfo_of_receiver_by_send_right(ipc_info_name_t *sendright, my_per_task_info_t **out_taskinfo, mach_port_name_t *out_recv_info);
-kern_return_t get_ipc_info_from_lsmp_spaceinfo(mach_port_t port_name, ipc_info_name_t *out_sendright);
+kern_return_t get_taskinfo_of_receiver_by_send_right(ipc_info_name_t sendright, my_per_task_info_t **out_taskinfo, mach_port_name_t *out_recv_info);
+kern_return_t get_taskinfo_of_receiver_by_send_right_info(ipc_info_port_t sendright_info, my_per_task_info_t **out_taskinfo, mach_port_name_t *out_recv_info);
 
 /* basic util functions */
 uint32_t print_hex_data(char *outstr, uint32_t maxlen, char *prefix, char *desc, void *addr, int len);

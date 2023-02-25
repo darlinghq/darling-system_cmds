@@ -15,7 +15,9 @@
 #include <limits.h>
 #include <errno.h>
 #include <CoreFoundation/CoreFoundation.h>
+#ifndef DARLING // in Darling, we already have panic declared through in `mach/mach.h`, included as a dependency of one of those headers above
 #include "panic.h"
+#endif
 #include <IOKit/IOKitLib.h>
 #include <spawn.h>
 

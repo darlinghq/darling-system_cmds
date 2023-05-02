@@ -15,4 +15,4 @@ target_link_libraries(chkpasswd
 	OpenDirectory
 )
 
-install(FILES chkpasswd.pam DESTINATION libexec/darling/etc/pam.d RENAME chkpasswd)
+install(FILES chkpasswd.pam DESTINATION libexec/darling/private/etc/pam.d RENAME chkpasswd)

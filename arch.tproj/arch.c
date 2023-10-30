@@ -147,9 +147,15 @@ static bool
 isSupportedCPU(cpu_type_t cpu)
 {
 #if defined(__x86_64__)
+#ifdef DARLING
+    if (((*(uint64_t*)_COMM_PAGE_CPU_CAPABILITIES64) & kIsTranslated))
+        return cpu == CPU_TYPE_X86_64 || cpu == CPU_TYPE_I386 || cpu == CPU_TYPE_ARM64;
+    return cpu == CPU_TYPE_X86_64 || cpu == CPU_TYPE_I386;
+#else
     if (((*(uint64_t*)_COMM_PAGE_CPU_CAPABILITIES64) & kIsTranslated))
         return cpu == CPU_TYPE_X86_64 || cpu == CPU_TYPE_ARM64;
     return cpu == CPU_TYPE_X86_64;
+#endif
 #elif defined(__i386__)
     return cpu == CPU_TYPE_I386 || cpu == CPU_TYPE_X86_64;
 #elif defined(__arm64__) && defined(__LP64__) && TARGET_OS_OSX

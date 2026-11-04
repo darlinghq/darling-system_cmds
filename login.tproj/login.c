@@ -1043,6 +1043,11 @@ main(int argc, char *argv[])
 		err(1, "asprintf()");
 	}
 
+	/* A login shell must not inherit libraries injected into its parent app.
+	 * In particular, GUI libraries can start threads before the shell forks
+	 * for command substitution. */
+	(void)unsetenv("DYLD_INSERT_LIBRARIES");
+
 #ifdef __APPLE__
 	if (fflag && *argv) {
 		*argv = arg0;

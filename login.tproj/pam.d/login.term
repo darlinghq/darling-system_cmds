@@ -1,4 +1,6 @@
 # login: account session
 account    required       pam_nologin.so
-account    required       pam_opendirectory.so
+# login selects this service only for -f logins by the same uid. Darling's
+# local passwd users have no OpenDirectory record to check here.
+account    required       pam_permit.so
 session    required       pam_uwtmp.so

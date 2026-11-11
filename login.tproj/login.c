@@ -234,6 +234,21 @@ extern au_tid_addr_t tid;
 #endif /* USE_BSM_AUDIT */
 #endif /* __APPLE__ */
 
+/*
+ * STOPGAP (not login's job): a login shell must not inherit libraries
+ * injected into its parent app; GUI libraries can start threads before the
+ * shell forks for command substitution. On macOS login is a set-user-ID
+ * program and dyld removes the DYLD_* variables of such restricted
+ * processes itself. The real fix is that dyld behaviour in Darling's dyld;
+ * until it exists, login removes the variable by hand. Remove this function
+ * once dyld does it.
+ */
+static void
+scrub_dyld_environment(void)
+{
+	(void)unsetenv("DYLD_INSERT_LIBRARIES");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1043,10 +1058,7 @@ main(int argc, char *argv[])
 		err(1, "asprintf()");
 	}
 
-	/* A login shell must not inherit libraries injected into its parent app.
-	 * In particular, GUI libraries can start threads before the shell forks
-	 * for command substitution. */
-	(void)unsetenv("DYLD_INSERT_LIBRARIES");
+	scrub_dyld_environment();
 
 #ifdef __APPLE__
 	if (fflag && *argv) {

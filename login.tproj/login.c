@@ -239,8 +239,8 @@ extern au_tid_addr_t tid;
  * injected into its parent app; GUI libraries can start threads before the
  * shell forks for command substitution. On macOS login is a set-user-ID
  * program and dyld removes the DYLD_* variables of such restricted
- * processes itself. The real fix is that dyld behaviour in Darling's dyld;
- * until it exists, login removes the variable by hand. Remove this function
+ * processes itself. The real fix is that dyld behaviour in Darling's dyld
+ * (darlinghq/darling-dyld#18); until it exists, login removes the variable by hand. Remove this function
  * once dyld does it.
  */
 static void

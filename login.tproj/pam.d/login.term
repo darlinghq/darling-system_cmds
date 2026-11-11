@@ -5,6 +5,7 @@ account    required       pam_nologin.so
 # STOPGAP: this skips the account checks of pam_opendirectory (such as a
 # disabled or expired account) for those logins. The real fix is for
 # pam_opendirectory to accept accounts that exist only in the local passwd
-# database; this line goes back to pam_opendirectory.so then.
+# database (darlinghq/darling-pam_modules#3); this line goes back to
+# pam_opendirectory.so then.
 account    required       pam_permit.so
 session    required       pam_uwtmp.so

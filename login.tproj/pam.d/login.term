@@ -1,4 +1,11 @@
 # login: account session
 account    required       pam_nologin.so
-account    required       pam_opendirectory.so
+# login selects this service only for -f logins by the same uid. Darling's
+# local passwd users have no OpenDirectory record to check here.
+# STOPGAP: this skips the account checks of pam_opendirectory (such as a
+# disabled or expired account) for those logins. The real fix is for
+# pam_opendirectory to accept accounts that exist only in the local passwd
+# database (darlinghq/darling-pam_modules#3); this line goes back to
+# pam_opendirectory.so then.
+account    required       pam_permit.so
 session    required       pam_uwtmp.so
